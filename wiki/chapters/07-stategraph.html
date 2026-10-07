@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="LangChain 与 LangGraph 源码驱动中文电子书">
+<title>StateGraph：状态、节点、边与 reducer · LangChain × LangGraph</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">LC×LG</span><span>LangChain × LangGraph</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 07</div><div class="rail-title">StateGraph：状态、节点、边与 reducer</div><ol><li><a href="#stategraph-是构建器">StateGraph 是构建器</a></li><li><a href="#state-input-与-output-可以不同">State、Input 与 Output 可以不同</a></li><li><a href="#默认-reducer-是覆盖">默认 reducer 是覆盖</a></li><li><a href="#reducer-是二元合并函数">reducer 是二元合并函数</a></li><li><a href="#node-只是函数-但签名有层次">Node 只是函数，但签名有层次</a></li><li><a href="#edge-表示调度-不表示数据复制">Edge 表示调度，不表示数据复制</a></li><li><a href="#compile-做的不只是画图">compile 做的不只是画图</a></li><li><a href="#一个状态设计检查表">一个状态设计检查表</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 07 章</div><h1>StateGraph：状态、节点、边与 reducer</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 12 分钟</div></header><div class="prose"><p><code>StateGraph</code> 的公开心智模型很小：State 是当前快照，Node 做工作并返回状态增量，Edge 决定下一步。但真正决定图是否可靠的是 reducer，因为它定义“增量如何变成下一份状态”。</p>
+<h2 id="stategraph-是构建器">StateGraph 是构建器<a class="anchor" href="#stategraph-是构建器" aria-label="链接到本节">#</a></h2>
+<p>源码 docstring 明确提醒：<code>StateGraph</code> 不能直接执行，必须先 <code>compile()</code>。构建阶段允许继续添加节点和边；编译阶段验证结构，并把 schema、channel、节点和路由转换成可运行的 <code>CompiledStateGraph</code>。</p>
+<pre><code class="language-python">from typing_extensions import TypedDict
+from langgraph.graph import START, END, StateGraph
+
+class State(TypedDict):
+    question: str
+    answer: str
+
+def answer(state: State) -&gt; dict:
+    return {&quot;answer&quot;: state[&quot;question&quot;].upper()}
+
+builder = StateGraph(State)
+builder.add_node(&quot;answer&quot;, answer)
+builder.add_edge(START, &quot;answer&quot;)
+builder.add_edge(&quot;answer&quot;, END)
+graph = builder.compile()
+</code></pre>
+<p>节点返回 partial state，不必复制整个对象。返回整份旧状态既浪费，也容易让并行更新覆盖彼此。</p>
+<h2 id="state-input-与-output-可以不同">State、Input 与 Output 可以不同<a class="anchor" href="#state-input-与-output-可以不同" aria-label="链接到本节">#</a></h2>
+<p>图可以声明总状态、输入 schema 和输出 schema。输入只暴露调用方允许提供的字段，输出只返回调用方需要看到的字段，内部状态仍可包含计划、重试计数和中间产物。</p>
+<p>这是一种接口约束，不是保密机制。当前官方文档特别提醒，<code>stream_mode=&quot;values&quot;</code> 默认可能包含私有 channel。敏感数据不应仅依赖 output schema 隐藏，事件出口也必须过滤。</p>
+<h2 id="默认-reducer-是覆盖">默认 reducer 是覆盖<a class="anchor" href="#默认-reducer-是覆盖" aria-label="链接到本节">#</a></h2>
+<p>未标注 reducer 的字段使用 last value 语义：节点返回的新值覆盖旧值。</p>
+<pre><code class="language-python">class State(TypedDict):
+    status: str
+</code></pre>
+<p>若两个并行节点在同一 super-step 写 <code>status</code>，运行时无法确定哪一个应该赢，通常会报告并发更新冲突。解决方案不是赌执行顺序，而是重新设计：</p>
+<ul>
+<li>两个节点写不同字段；</li>
+<li>给字段定义可合并 reducer；</li>
+<li>让聚合节点在下一步做显式选择。</li>
+</ul>
+<h2 id="reducer-是二元合并函数">reducer 是二元合并函数<a class="anchor" href="#reducer-是二元合并函数" aria-label="链接到本节">#</a></h2>
+<pre><code class="language-python">from operator import add
+from typing import Annotated
+
+class State(TypedDict):
+    notes: Annotated[list[str], add]
+</code></pre>
+<p>节点返回 <code>{&quot;notes&quot;: [&quot;new&quot;]}</code>，运行时计算 <code>add(old, update)</code>。好的 reducer 应尽量满足：</p>
+<ul>
+<li>确定性：同样输入得到同样结果；</li>
+<li>无副作用：不修改外部状态；</li>
+<li>能处理并行写入顺序，必要时自行建立稳定排序；</li>
+<li>语义明确：追加、集合并集、最大值与覆盖不能混用。</li>
+</ul>
+<p>空列表也不一定表示清空。对追加 reducer 而言，<code>old + []</code> 仍是 old。需要绕过 reducer 时使用当前 API 提供的 <code>Overwrite</code>，或重新设计独立的 reset 字段。</p>
+<h3 id="用两个检索节点手算一次合并">用两个检索节点手算一次合并<a class="anchor" href="#用两个检索节点手算一次合并" aria-label="链接到本节">#</a></h3>
+<p>旧 notes 为 <code>[&quot;原材料&quot;]</code>，并行节点分别返回 <code>[&quot;文档 A&quot;]</code> 与 <code>[&quot;文档 B&quot;]</code>。追加 reducer 合并后保留三份材料，但 A、B 的排列不能被当作业务优先级。若要求按日期或证据等级排序，应保存稳定 ID 和属性，由聚合步骤显式整理。</p>
+<p>若节点每次返回旧 notes 加新增项，reducer 又把整份列表追加到旧状态，就会重复原材料。partial update 表达本次新增，reducer 表达历史如何累积，两个职责不能同时各做一次追加。修订一个值则应考虑覆盖语义，不要把所有字段都设成累计。</p>
+<h2 id="node-只是函数-但签名有层次">Node 只是函数，但签名有层次<a class="anchor" href="#node-只是函数-但签名有层次" aria-label="链接到本节">#</a></h2>
+<p>最简单的节点只接收 state。需要不可变运行上下文时接收 <code>Runtime[Context]</code>，需要 config 时可接收 Runnable config。依赖注入应保持可见，不要从全局变量偷偷读取用户身份或数据库连接。</p>
+<p>节点粒度可以用一个判断标准：这个步骤是否值得独立重试、观测或恢复？如果答案都是否，可能不需要拆成节点。</p>
+<h2 id="edge-表示调度-不表示数据复制">Edge 表示调度，不表示数据复制<a class="anchor" href="#edge-表示调度-不表示数据复制" aria-label="链接到本节">#</a></h2>
+<p>固定边让目标节点在源节点完成后运行。条件边根据路由函数返回值选择目标。多个出边可以激活并行节点，多个入边则要区分“任一完成即可触发”与“等待全部完成”的语义。</p>
+<p>图的共享 state 由 channel 维护，不是沿每条边复制一份字典。节点在同一 super-step 中看不到彼此本步刚写入的数据，这一规则要到 Pregel 章节详细解释。</p>
+<h3 id="边的含义是安排工作-不是传递专属字典">边的含义是安排工作，不是传递专属字典<a class="anchor" href="#边的含义是安排工作-不是传递专属字典" aria-label="链接到本节">#</a></h3>
+<p>search 到 draft 的边告诉运行时何时激活 draft，draft 读取的是符合 schema 的状态视图。如果两条并行支路都需要 question，它们可以读取同一步快照；一条支路不能靠先执行几毫秒让另一条读到新 notes。</p>
+<p>聚合节点若必须等两个来源都完成，应明确表达等待关系。只画两条普通入边，不能在不了解触发规则时假定它们等价于“全部到齐”。图形相似，调度合同仍需用执行轨迹验证。</p>
+<h2 id="compile-做的不只是画图">compile 做的不只是画图<a class="anchor" href="#compile-做的不只是画图" aria-label="链接到本节">#</a></h2>
+<p>编译阶段会：</p>
+<ul>
+<li>校验节点和边引用；</li>
+<li>为状态字段建立 channel；</li>
+<li>把节点转成 Pregel actor；</li>
+<li>建立触发器和写入通道；</li>
+<li>绑定 checkpointer、store、cache 与 interrupt 配置；</li>
+<li>生成可调用的 Runnable 图。</li>
+</ul>
+<p>因此 builder 与 compiled graph 应视为两个阶段。运行后再修改 builder，不会自动改变已经编译出的对象。</p>
+<h2 id="一个状态设计检查表">一个状态设计检查表<a class="anchor" href="#一个状态设计检查表" aria-label="链接到本节">#</a></h2>
+<p>为每个字段写下：</p>
+<ol>
+<li>谁能写？</li>
+<li>是覆盖还是累计？</li>
+<li>两个并行节点同时写会怎样？</li>
+<li>是否需要进入 checkpoint？</li>
+<li>是否会被发给模型或流给客户端？</li>
+<li>如何清理，最大会增长到多大？</li>
+</ol>
+<p>如果这些问题答不出来，先不要添加节点。多数图问题最初都是状态模型问题。</p>
+<h3 id="状态字段越多-恢复合同越大">状态字段越多，恢复合同越大<a class="anchor" href="#状态字段越多-恢复合同越大" aria-label="链接到本节">#</a></h3>
+<p>保存完整检索文档，恢复时资料可用，但每次 checkpoint 和事件输出都更重。保存文档 ID 更小，却要确保重读得到同一版本且仍有权限。两种设计都有代价，应根据是否需要精确重现来决定，不能统一选最短 state。</p>
+<p>编译时绑定的图结构、节点名称和状态 schema 也参与恢复。上线后直接改字段含义，旧 checkpoint 可能仍能反序列化，却被新逻辑错误解释。版本测试要验证语义，而不仅验证数据能读出来。</p>
+<h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><code>langgraph/graph/state.py</code></li>
+<li><code>langgraph/graph/_branch.py</code></li>
+<li><code>langgraph/channels/last_value.py</code></li>
+<li><code>langgraph/channels/binop.py</code></li>
+<li><code>langgraph/graph/message.py</code></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="06-create-agent.html"><small>上一章</small><strong>create_agent 到底创建了什么</strong></a><a class="next" href="08-control-flow.html"><small>下一章</small><strong>路由、循环与 Command</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>读前说明：这本书怎么读</a><a href="../chapters/01-two-layers.html"><span>01</span>两层框架，一条执行链</a><a href="../chapters/02-loop-from-scratch.html"><span>02</span>不用框架，先写出 Agent 循环</a><a href="../chapters/03-messages.html"><span>03</span>消息是运行时协议，不是聊天字符串</a><a href="../chapters/04-tools.html"><span>04</span>工具调用：Schema、执行与结果回填</a><a href="../chapters/05-runnables.html"><span>05</span>Runnable 与 LCEL：统一调用表面</a><a href="../chapters/06-create-agent.html"><span>06</span>create_agent 到底创建了什么</a><a href="../chapters/07-stategraph.html"><span>07</span>StateGraph：状态、节点、边与 reducer</a><a href="../chapters/08-control-flow.html"><span>08</span>路由、循环与 Command</a><a href="../chapters/09-pregel.html"><span>09</span>Pregel：图在运行时如何前进</a><a href="../chapters/10-persistence.html"><span>10</span>检查点与 Store：两种记忆边界</a><a href="../chapters/11-interrupts.html"><span>11</span>中断、重放与人工审批</a><a href="../chapters/12-streaming.html"><span>12</span>流式输出不是一种流</a><a href="../chapters/13-subgraphs.html"><span>13</span>子图与多 Agent：先隔离上下文</a><a href="../chapters/14-project.html"><span>14</span>端到端：本地研究助手</a><a href="../chapters/15-production.html"><span>15</span>生产检查表与源码阅读路线</a><a href="../chapters/appendix-glossary.html"><span>A</span>术语与 API 速查</a><a href="../chapters/appendix-sources.html"><span>B</span>来源、版本与原创性说明</a></nav>
+</dialog>
+<footer class="site-footer">基于官方源码快照独立撰写 · LangChain 1.4.2 · LangGraph 1.2.12</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

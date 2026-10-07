@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="LangChain 与 LangGraph 源码驱动中文电子书">
+<title>术语与 API 速查 · LangChain × LangGraph</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">LC×LG</span><span>LangChain × LangGraph</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Appendix</div><div class="rail-title">术语与 API 速查</div><ol><li><a href="#核心术语">核心术语</a></li><li><a href="#最常用导入">最常用导入</a></li><li><a href="#最小-stategraph-模板">最小 StateGraph 模板</a></li><li><a href="#带-reducer-的状态">带 reducer 的状态</a></li><li><a href="#checkpointer-模板">Checkpointer 模板</a></li><li><a href="#interrupt-模板">Interrupt 模板</a></li><li><a href="#选型速查">选型速查</a></li><li><a href="#故障速查">故障速查</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">附录 A</div><h1>术语与 API 速查</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 6 分钟</div></header><div class="prose"><p>速查页用来找回已经读过的执行关系，不能代替正文。比如看到“reducer”，应想到节点返回增量如何变成新 state；看到“interrupt”，应想到首次暂停与下一次恢复之间的保存边界。只背名称，容易误把暂停当作仍在原调用栈中等待。</p>
+<p>遇到问题先描述具体对象：哪条工具消息没有请求、哪个字段重复、哪个副作用发生两次，再找术语和源码。这样查到的是行为原因，而不是一个听起来相关的 API。</p>
+<h2 id="核心术语">核心术语<a class="anchor" href="#核心术语" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>术语</th>
+<th>本书中的含义</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Agent</td>
+<td>模型在循环中选择并调用工具，直到完成或停止</td>
+</tr>
+<tr>
+<td>Harness</td>
+<td>围绕 Agent 循环的提示、工具、middleware、上下文与策略</td>
+</tr>
+<tr>
+<td>Message</td>
+<td>模型、用户和工具之间的结构化协议对象</td>
+</tr>
+<tr>
+<td>Tool call</td>
+<td>模型提出的结构化执行请求，不代表动作已经发生</td>
+</tr>
+<tr>
+<td>Runnable</td>
+<td>统一 invoke、batch、stream 与组合的执行接口</td>
+</tr>
+<tr>
+<td>State</td>
+<td>图在某一步可见的业务快照</td>
+</tr>
+<tr>
+<td>Partial update</td>
+<td>节点返回的局部状态更新</td>
+</tr>
+<tr>
+<td>Reducer</td>
+<td>把旧值与一个或多个更新合并为新值的函数</td>
+</tr>
+<tr>
+<td>Node</td>
+<td>读取状态、执行工作并产生更新的单元</td>
+</tr>
+<tr>
+<td>Edge</td>
+<td>定义下一步调度关系，不负责复制数据</td>
+</tr>
+<tr>
+<td>Super-step</td>
+<td>Pregel 的一个同步步骤，包含 Plan、Execution、Update</td>
+</tr>
+<tr>
+<td>Channel</td>
+<td>Pregel 中保存值并合并写入的通信对象</td>
+</tr>
+<tr>
+<td>Checkpoint</td>
+<td>某个 thread 在步骤边界的可恢复状态</td>
+</tr>
+<tr>
+<td>Checkpointer</td>
+<td>checkpoint 的保存与查询实现</td>
+</tr>
+<tr>
+<td>Store</td>
+<td>跨 thread 的应用数据存储</td>
+</tr>
+<tr>
+<td>Interrupt</td>
+<td>保存暂停点并把决策交给外部调用方</td>
+</tr>
+<tr>
+<td>Command</td>
+<td>同时表达状态更新、跳转或恢复值的对象</td>
+</tr>
+<tr>
+<td>Subgraph</td>
+<td>作为节点嵌入父图的编译图</td>
+</tr>
+<tr>
+<td>Thread</td>
+<td>一条可持续和恢复的工作流实例，由 <code>thread_id</code> 标识</td>
+</tr>
+</tbody></table></div>
+<h2 id="最常用导入">最常用导入<a class="anchor" href="#最常用导入" aria-label="链接到本节">#</a></h2>
+<pre><code class="language-python">from langchain.agents import create_agent
+from langchain.tools import tool
+from langchain.chat_models import init_chat_model
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+
+from langgraph.graph import START, END, StateGraph, MessagesState
+from langgraph.types import Command, Send, interrupt
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.store.memory import InMemoryStore
+</code></pre>
+<p>导入路径对应本书源码快照。若未来版本变化，以当前官方 reference 为准。</p>
+<h2 id="最小-stategraph-模板">最小 StateGraph 模板<a class="anchor" href="#最小-stategraph-模板" aria-label="链接到本节">#</a></h2>
+<pre><code class="language-python">from typing_extensions import TypedDict
+from langgraph.graph import START, END, StateGraph
+
+class State(TypedDict):
+    value: str
+
+def work(state: State) -&gt; dict:
+    return {&quot;value&quot;: state[&quot;value&quot;].upper()}
+
+builder = StateGraph(State)
+builder.add_node(&quot;work&quot;, work)
+builder.add_edge(START, &quot;work&quot;)
+builder.add_edge(&quot;work&quot;, END)
+graph = builder.compile()
+
+assert graph.invoke({&quot;value&quot;: &quot;ok&quot;}) == {&quot;value&quot;: &quot;OK&quot;}
+</code></pre>
+<h2 id="带-reducer-的状态">带 reducer 的状态<a class="anchor" href="#带-reducer-的状态" aria-label="链接到本节">#</a></h2>
+<pre><code class="language-python">import operator
+from typing import Annotated
+from typing_extensions import TypedDict
+
+class State(TypedDict):
+    items: Annotated[list[str], operator.add]
+</code></pre>
+<p>节点返回新增列表，不返回完整累计列表。</p>
+<h2 id="checkpointer-模板">Checkpointer 模板<a class="anchor" href="#checkpointer-模板" aria-label="链接到本节">#</a></h2>
+<pre><code class="language-python">checkpointer = InMemorySaver()
+graph = builder.compile(checkpointer=checkpointer)
+config = {&quot;configurable&quot;: {&quot;thread_id&quot;: &quot;stable-business-id&quot;}}
+result = graph.invoke(input_state, config)
+state = graph.get_state(config)
+</code></pre>
+<p>内存实现只用于开发测试。</p>
+<h2 id="interrupt-模板">Interrupt 模板<a class="anchor" href="#interrupt-模板" aria-label="链接到本节">#</a></h2>
+<pre><code class="language-python">def approve(state):
+    answer = interrupt({&quot;kind&quot;: &quot;approval&quot;, &quot;preview&quot;: state[&quot;draft&quot;]})
+    return {&quot;approved&quot;: answer[&quot;approved&quot;]}
+
+paused = graph.invoke(input_state, config)
+finished = graph.invoke(Command(resume={&quot;approved&quot;: True}), config)
+</code></pre>
+<p>中断之前的代码必须可安全重放。</p>
+<h2 id="选型速查">选型速查<a class="anchor" href="#选型速查" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>需求</th>
+<th>首选</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>单次模型调用</td>
+<td>provider SDK 或 <code>init_chat_model</code></td>
+</tr>
+<tr>
+<td>无环组件变换</td>
+<td>Runnable / LCEL</td>
+</tr>
+<tr>
+<td>标准工具 Agent</td>
+<td><code>create_agent</code></td>
+</tr>
+<tr>
+<td>自定义状态机</td>
+<td><code>StateGraph</code></td>
+</tr>
+<tr>
+<td>现有函数加持久化</td>
+<td>Functional API</td>
+</tr>
+<tr>
+<td>研究底层 actor/channel</td>
+<td>Pregel</td>
+</tr>
+<tr>
+<td>会话短期状态</td>
+<td>checkpointer</td>
+</tr>
+<tr>
+<td>跨会话用户知识</td>
+<td>store</td>
+</tr>
+<tr>
+<td>人工审批</td>
+<td>interrupt + persistent checkpointer</td>
+</tr>
+</tbody></table></div>
+<h2 id="故障速查">故障速查<a class="anchor" href="#故障速查" aria-label="链接到本节">#</a></h2>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>现象</th>
+<th>先查哪里</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>工具从不被调用</td>
+<td>工具名称、描述、schema、模型能力</td>
+</tr>
+<tr>
+<td>同一字段并行更新报错</td>
+<td>reducer 与节点写集合</td>
+</tr>
+<tr>
+<td>恢复后重复外部操作</td>
+<td>checkpoint 边界与幂等键</td>
+</tr>
+<tr>
+<td>会话没有延续</td>
+<td><code>thread_id</code> 与 checkpointer</td>
+</tr>
+<tr>
+<td>不同会话无法共享偏好</td>
+<td>是否误把长期数据只放 checkpoint</td>
+</tr>
+<tr>
+<td>stream 泄露内部字段</td>
+<td>stream mode 与输出白名单</td>
+</tr>
+<tr>
+<td>token 正常但页面不增量</td>
+<td>中间 Runnable 与网络缓冲</td>
+</tr>
+<tr>
+<td>循环直到 recursion limit</td>
+<td>缺少业务停止条件或状态不单调</td>
+</tr>
+</tbody></table></div>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="15-production.html"><small>上一章</small><strong>生产检查表与源码阅读路线</strong></a><a class="next" href="appendix-sources.html"><small>下一章</small><strong>来源、版本与原创性说明</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>读前说明：这本书怎么读</a><a href="../chapters/01-two-layers.html"><span>01</span>两层框架，一条执行链</a><a href="../chapters/02-loop-from-scratch.html"><span>02</span>不用框架，先写出 Agent 循环</a><a href="../chapters/03-messages.html"><span>03</span>消息是运行时协议，不是聊天字符串</a><a href="../chapters/04-tools.html"><span>04</span>工具调用：Schema、执行与结果回填</a><a href="../chapters/05-runnables.html"><span>05</span>Runnable 与 LCEL：统一调用表面</a><a href="../chapters/06-create-agent.html"><span>06</span>create_agent 到底创建了什么</a><a href="../chapters/07-stategraph.html"><span>07</span>StateGraph：状态、节点、边与 reducer</a><a href="../chapters/08-control-flow.html"><span>08</span>路由、循环与 Command</a><a href="../chapters/09-pregel.html"><span>09</span>Pregel：图在运行时如何前进</a><a href="../chapters/10-persistence.html"><span>10</span>检查点与 Store：两种记忆边界</a><a href="../chapters/11-interrupts.html"><span>11</span>中断、重放与人工审批</a><a href="../chapters/12-streaming.html"><span>12</span>流式输出不是一种流</a><a href="../chapters/13-subgraphs.html"><span>13</span>子图与多 Agent：先隔离上下文</a><a href="../chapters/14-project.html"><span>14</span>端到端：本地研究助手</a><a href="../chapters/15-production.html"><span>15</span>生产检查表与源码阅读路线</a><a href="../chapters/appendix-glossary.html"><span>A</span>术语与 API 速查</a><a href="../chapters/appendix-sources.html"><span>B</span>来源、版本与原创性说明</a></nav>
+</dialog>
+<footer class="site-footer">基于官方源码快照独立撰写 · LangChain 1.4.2 · LangGraph 1.2.12</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

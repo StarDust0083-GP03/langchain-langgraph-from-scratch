@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="LangChain 与 LangGraph 源码驱动中文电子书">
+<title>读前说明：这本书怎么读 · LangChain × LangGraph</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">LC×LG</span><span>LangChain × LangGraph</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 00</div><div class="rail-title">读前说明：这本书怎么读</div><ol><li><a href="#本书回答什么">本书回答什么</a></li><li><a href="#跟着一份状态读-而不只记住名字">跟着一份状态读，而不只记住名字</a></li><li><a href="#源码快照">源码快照</a></li><li><a href="#阅读路线">阅读路线</a></li><li><a href="#示例约定">示例约定</a></li><li><a href="#如何看源码引用">如何看源码引用</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 00 章</div><h1>读前说明：这本书怎么读</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 8 分钟</div></header><div class="prose"><p>LangChain 和 LangGraph 最容易学错的地方，不是 API 太多，而是入口太多。搜索结果里同时存在 0.x 的 Chain 教程、1.x 的 Agent 工厂、LangGraph 的 Graph API、Functional API，以及依赖不同模型供应商的样例。每一段代码单独看都像是正确答案，拼在一起却常常跑不起来。</p>
+<p>这本书换一种路线：先固定版本和源码，再建立执行模型，最后才谈应用模式。</p>
+<h2 id="本书回答什么">本书回答什么<a class="anchor" href="#本书回答什么" aria-label="链接到本节">#</a></h2>
+<p>读完后，你应该能独立回答五个问题：</p>
+<ol>
+<li>LangChain 和 LangGraph 各自负责哪一层？</li>
+<li>一次工具调用在消息、模型、工具和状态之间如何流动？</li>
+<li><code>StateGraph</code> 为什么需要 reducer，<code>compile()</code> 又编译了什么？</li>
+<li>checkpoint、store、interrupt 和 stream 的边界在哪里？</li>
+<li>出现重复副作用、状态膨胀、恢复异常时，应从哪段源码开始查？</li>
+</ol>
+<p>本书不会罗列每个 provider 的参数。模型名称和价格变得很快，消息协议、状态转换和持久化边界更值得掌握。</p>
+<h2 id="跟着一份状态读-而不只记住名字">跟着一份状态读，而不只记住名字<a class="anchor" href="#跟着一份状态读-而不只记住名字" aria-label="链接到本节">#</a></h2>
+<p>读正文时，可以始终想象同一个研究任务：用户提问，模型要资料，工具返回笔记，图形成草稿，人决定是否发布。遇到新概念，先看它改变了这条路径的哪一部分，再读类型与源码入口。</p>
+<p>消息章节追请求与结果的身份；状态章节追哪个字段何时可见；运行时章节追任务如何推进；持久化和中断章节追两次调用之间靠什么连接。后面的生产边界并非额外规则，而是前面机制在超时、重复和升级时会遇到的后果。正文用具体状态推演和失败情景展开，速查表放在需要回看时再读。</p>
+<h2 id="源码快照">源码快照<a class="anchor" href="#源码快照" aria-label="链接到本节">#</a></h2>
+<p>本书以 2026-09-22 的两个官方仓库为基线：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>项目</th>
+<th>提交</th>
+<th>本书对应包</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>LangChain</td>
+<td><code>877ad8c7bfa3</code></td>
+<td><code>langchain 1.4.2</code>、<code>langchain-core 1.6.4</code></td>
+</tr>
+<tr>
+<td>LangGraph</td>
+<td><code>1afaca35a0d4</code></td>
+<td><code>langgraph 1.2.12</code>、<code>langgraph-checkpoint 4.2.0</code></td>
+</tr>
+</tbody></table></div>
+<p>本地浅克隆位于 <code>sources/repos/langchain</code> 与 <code>sources/repos/langgraph</code>。版本以后一定会变化，所以正文把内容分成三类：</p>
+<ul>
+<li><strong>稳定心智模型</strong>：消息、工具循环、状态更新、super-step、checkpoint 与 store 的职责。</li>
+<li><strong>当前 API</strong>：示例中的导入路径和函数签名。</li>
+<li><strong>版本提示</strong>：beta 接口或快照中新出现的能力，例如 <code>DeltaChannel</code>。</li>
+</ul>
+<p>遇到当前 API 与未来版本不一致时，先保留心智模型，再去官方 reference 核对名字。</p>
+<h2 id="阅读路线">阅读路线<a class="anchor" href="#阅读路线" aria-label="链接到本节">#</a></h2>
+<h3 id="想尽快做出-agent">想尽快做出 Agent<a class="anchor" href="#想尽快做出-agent" aria-label="链接到本节">#</a></h3>
+<p>读第 1、2、4、6、7、10、14 章。你会得到一条从工具循环到带记忆图的最短路径。</p>
+<h3 id="想读懂框架源码">想读懂框架源码<a class="anchor" href="#想读懂框架源码" aria-label="链接到本节">#</a></h3>
+<p>按顺序读完全书。第 5 章的 Runnable 和第 9 章的 Pregel 是连接表层 API 与运行时的两座桥。</p>
+<h3 id="正在排查线上问题">正在排查线上问题<a class="anchor" href="#正在排查线上问题" aria-label="链接到本节">#</a></h3>
+<p>直接看第 9 至 15 章。大部分问题属于四类：状态合并、恢复重放、副作用幂等、事件消费。</p>
+<h2 id="示例约定">示例约定<a class="anchor" href="#示例约定" aria-label="链接到本节">#</a></h2>
+<p>书中使用“本地研究助手”作为贯穿案例。它读取本地资料、形成草稿，并在发布前等待人工审批。选择这个例子有三个原因：</p>
+<ul>
+<li>不需要付费模型也能验证控制流；</li>
+<li>同时覆盖循环、路由、并行、持久化和中断；</li>
+<li>容易区分框架行为与模型能力。</li>
+</ul>
+<p><code>examples/mini_agent.py</code> 只使用 Python 标准库，展示最小工具循环。<code>examples/research_assistant.py</code> 使用真实 LangGraph API，但模型与资料仍是确定性的，因此测试不会受网络和随机输出影响。</p>
+<h2 id="如何看源码引用">如何看源码引用<a class="anchor" href="#如何看源码引用" aria-label="链接到本节">#</a></h2>
+<p>每章末尾的“源码入口”只列最值得打开的文件，不追求逐行覆盖。推荐采用三步法：</p>
+<ol>
+<li>先读公开类型和 docstring，确认输入输出。</li>
+<li>再读构建阶段，看对象如何被组装。</li>
+<li>最后跟运行阶段，看状态何时可见、何时被持久化。</li>
+</ol>
+<p>不要一上来从 6000 行的基类顺序往下读。带着问题找调用链，比统计读过多少文件更有效。</p>
+<blockquote>
+<p>本书是独立撰写的学习材料。外部教程仅用于比较教学顺序，正文、图解、示例业务和代码均重新组织。完整来源见附录。</p>
+</blockquote>
+</div><nav class="chapter-nav" aria-label="章节导航"><a class="next" href="01-two-layers.html"><small>下一章</small><strong>两层框架，一条执行链</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>读前说明：这本书怎么读</a><a href="../chapters/01-two-layers.html"><span>01</span>两层框架，一条执行链</a><a href="../chapters/02-loop-from-scratch.html"><span>02</span>不用框架，先写出 Agent 循环</a><a href="../chapters/03-messages.html"><span>03</span>消息是运行时协议，不是聊天字符串</a><a href="../chapters/04-tools.html"><span>04</span>工具调用：Schema、执行与结果回填</a><a href="../chapters/05-runnables.html"><span>05</span>Runnable 与 LCEL：统一调用表面</a><a href="../chapters/06-create-agent.html"><span>06</span>create_agent 到底创建了什么</a><a href="../chapters/07-stategraph.html"><span>07</span>StateGraph：状态、节点、边与 reducer</a><a href="../chapters/08-control-flow.html"><span>08</span>路由、循环与 Command</a><a href="../chapters/09-pregel.html"><span>09</span>Pregel：图在运行时如何前进</a><a href="../chapters/10-persistence.html"><span>10</span>检查点与 Store：两种记忆边界</a><a href="../chapters/11-interrupts.html"><span>11</span>中断、重放与人工审批</a><a href="../chapters/12-streaming.html"><span>12</span>流式输出不是一种流</a><a href="../chapters/13-subgraphs.html"><span>13</span>子图与多 Agent：先隔离上下文</a><a href="../chapters/14-project.html"><span>14</span>端到端：本地研究助手</a><a href="../chapters/15-production.html"><span>15</span>生产检查表与源码阅读路线</a><a href="../chapters/appendix-glossary.html"><span>A</span>术语与 API 速查</a><a href="../chapters/appendix-sources.html"><span>B</span>来源、版本与原创性说明</a></nav>
+</dialog>
+<footer class="site-footer">基于官方源码快照独立撰写 · LangChain 1.4.2 · LangGraph 1.2.12</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

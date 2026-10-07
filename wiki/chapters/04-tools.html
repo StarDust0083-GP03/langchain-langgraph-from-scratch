@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="LangChain 与 LangGraph 源码驱动中文电子书">
+<title>工具调用：Schema、执行与结果回填 · LangChain × LangGraph</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">LC×LG</span><span>LangChain × LangGraph</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 04</div><div class="rail-title">工具调用：Schema、执行与结果回填</div><ol><li><a href="#从函数到工具">从函数到工具</a></li><li><a href="#basetool-也是-runnable">BaseTool 也是 Runnable</a></li><li><a href="#toolnode-解决什么">ToolNode 解决什么</a></li><li><a href="#返回文本-对象还是-command">返回文本、对象还是 Command</a></li><li><a href="#结构化输出不是普通工具">结构化输出不是普通工具</a></li><li><a href="#工具权限放在哪里">工具权限放在哪里</a></li><li><a href="#副作用与幂等">副作用与幂等</a></li><li><a href="#常见误区">常见误区</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 04 章</div><h1>工具调用：Schema、执行与结果回填</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 10 分钟</div></header><div class="prose"><p>工具是模型世界与真实系统之间的窄门。设计得好，模型只需要做选择和填参数；设计得差，模型会猜测内部 ID、绕过权限边界，或把一次操作拆成无法恢复的半成品。</p>
+<h2 id="从函数到工具">从函数到工具<a class="anchor" href="#从函数到工具" aria-label="链接到本节">#</a></h2>
+<p>最短写法是装饰普通函数：</p>
+<pre><code class="language-python">from langchain.tools import tool
+
+@tool
+def search_notes(query: str, limit: int = 5) -&gt; str:
+    &quot;&quot;&quot;Search approved local notes for a technical question.&quot;&quot;&quot;
+    ...
+</code></pre>
+<p>框架从函数名、类型标注和 docstring 构造名称、描述与输入 schema。三个字段分别回答：</p>
+<ol>
+<li>这个能力叫什么？</li>
+<li>什么情况下应该用？</li>
+<li>输入必须满足什么结构？</li>
+</ol>
+<p>类型标注不是文档装饰。它会进入 schema，也会影响运行时校验。复杂参数适合用 Pydantic 模型明确约束，但不要为了“结构化”把简单工具拆成十几个字段。</p>
+<h3 id="参数合法-与操作允许是两道门">参数合法，与操作允许是两道门<a class="anchor" href="#参数合法-与操作允许是两道门" aria-label="链接到本节">#</a></h3>
+<p>schema 能说明 limit 必须是整数、query 必须是字符串，却不能证明调用者有权搜索某个租户的资料。用户身份应由服务注入，不能让模型在公开参数中任选。否则模型生成完全合法的 JSON，也可能代表错误主体读取数据。</p>
+<p>工具描述还要说清适用条件。名称叫 search 很泛，说明只检索审核本地笔记、返回引用，会让模型更容易选择正确入口。描述不是执行保障，工具内部仍要限定路径、结果大小和权限。</p>
+<h2 id="basetool-也是-runnable"><code>BaseTool</code> 也是 Runnable<a class="anchor" href="#basetool-也是-runnable" aria-label="链接到本节">#</a></h2>
+<p>源码中 <code>BaseTool</code> 继承 <code>RunnableSerializable</code>，因此工具拥有 <code>invoke</code>、<code>ainvoke</code>、batch 和配置传播能力。这解释了为什么 callback、tag、metadata 和 runtime config 能沿 Agent 调用传下去。</p>
+<p>工具执行的关键边界仍然是：</p>
+<pre><code class="language-text">模型输出 tool_call
+  -&gt; 查找注册工具
+  -&gt; 校验参数
+  -&gt; 注入 runtime/state/store
+  -&gt; 执行同步或异步函数
+  -&gt; 格式化 ToolMessage
+</code></pre>
+<p>模型不会直接调用 Python 函数。执行器决定是否允许调用，以及如何处理异常。</p>
+<h2 id="toolnode-解决什么">ToolNode 解决什么<a class="anchor" href="#toolnode-解决什么" aria-label="链接到本节">#</a></h2>
+<p>LangGraph 的 <code>ToolNode</code> 负责标准工具节点的繁琐部分：</p>
+<ul>
+<li>从最后一条 AI 消息提取工具请求；</li>
+<li>根据名称匹配工具；</li>
+<li>对多个调用并行执行；</li>
+<li>把返回值转换为 <code>ToolMessage</code>；</li>
+<li>注入状态、store 和 runtime；</li>
+<li>按配置处理工具错误。</li>
+</ul>
+<p>这不是简单的 <code>for call in calls</code>。一旦加入并行、异步、注入和命令式状态更新，手写执行器很容易漏掉协议细节。</p>
+<h3 id="并行工具执行没有自动形成一个事务">并行工具执行没有自动形成一个事务<a class="anchor" href="#并行工具执行没有自动形成一个事务" aria-label="链接到本节">#</a></h3>
+<p>模型同一轮请求“创建工单”和“发送通知”，ToolNode 可以分别执行，但第一项成功、第二项失败时，不能声称整组要么都成功要么都失败。每个工具应返回可识别的业务状态，后续计划根据实际结果补偿，而非把整组盲目重试。</p>
+<p>只读检索通常比较容易重试；外部写操作需要稳定幂等键。tool_call_id 可以追踪一轮请求，但模型重新规划后可能生成新 ID，因此关键副作用最好使用订单或流程实例等业务身份去重。</p>
+<h2 id="返回文本-对象还是-command">返回文本、对象还是 Command<a class="anchor" href="#返回文本-对象还是-command" aria-label="链接到本节">#</a></h2>
+<p>多数工具返回字符串或可序列化对象，随后被包装成工具消息。需要同时更新图状态时，可以返回 <code>Command(update=...)</code>。例如查询客户资料后，既告诉模型摘要，又把客户 ID 写入状态。</p>
+<p>应谨慎使用 Command。工具如果随意改多个状态字段，会让数据流隐藏在执行器内部。只有“工具结果本身就是状态变化”时才值得这样做。</p>
+<h2 id="结构化输出不是普通工具">结构化输出不是普通工具<a class="anchor" href="#结构化输出不是普通工具" aria-label="链接到本节">#</a></h2>
+<p>让模型最终返回一个 Pydantic 对象，常见实现有两条：</p>
+<ul>
+<li>Provider strategy：使用供应商原生结构化输出能力。</li>
+<li>Tool strategy：把目标 schema 表示成一个特殊工具调用。</li>
+</ul>
+<p><code>create_agent(response_format=Schema)</code> 会依据模型能力选择策略。结构化结果应接受校验失败和重试，而不是假设模型生成的 JSON 一定合法。</p>
+<p>工具调用用于请求应用执行动作，结构化输出用于约束最终答案。两者底层可能都使用 schema，但业务含义不同。</p>
+<h2 id="工具权限放在哪里">工具权限放在哪里<a class="anchor" href="#工具权限放在哪里" aria-label="链接到本节">#</a></h2>
+<h3 id="静态白名单">静态白名单<a class="anchor" href="#静态白名单" aria-label="链接到本节">#</a></h3>
+<p>创建 Agent 时只注册当前场景允许的工具。没有注册的能力就不能执行，这是最可靠的第一层。</p>
+<h3 id="动态选择">动态选择<a class="anchor" href="#动态选择" aria-label="链接到本节">#</a></h3>
+<p>中间件可根据用户角色、会话阶段或功能开关筛选工具。动态策略必须以服务端身份为依据，不能相信用户消息里自称管理员。</p>
+<h3 id="工具内部校验">工具内部校验<a class="anchor" href="#工具内部校验" aria-label="链接到本节">#</a></h3>
+<p>最终权限检查仍在工具内部或它调用的领域服务中。即便路由层出错，敏感操作也不应越权。</p>
+<pre><code class="language-text">注册集合限制能力面
+    + 中间件限制当前可见集合
+    + 领域服务执行最终授权
+</code></pre>
+<h2 id="副作用与幂等">副作用与幂等<a class="anchor" href="#副作用与幂等" aria-label="链接到本节">#</a></h2>
+<p>发送邮件、扣库存、创建工单都应接收幂等键。Agent 的节点可能因重试或中断恢复而再次执行，不能把“框架通常只调用一次”当作事务保证。</p>
+<p>推荐记录：</p>
+<ul>
+<li>tool call ID 或业务幂等键；</li>
+<li>参数摘要；</li>
+<li>调用者与审批结果；</li>
+<li>执行状态和外部系统返回 ID。</li>
+</ul>
+<p>超时也不代表外部操作失败。先按幂等键查询，再决定是否重试。</p>
+<h3 id="超时后怎样确认一封邮件究竟发没发">超时后怎样确认一封邮件究竟发没发<a class="anchor" href="#超时后怎样确认一封邮件究竟发没发" aria-label="链接到本节">#</a></h3>
+<p>发送请求超时，可能是邮件服务没有接到，也可能是发送成功但响应丢了。直接重试会产生两封。工具可以先按业务幂等键查询外部状态，已成功则返回原结果，未完成再按服务契约重试。checkpoint 保存的是图状态，无法填补外部系统与图存储之间的事务空隙。</p>
+<p>审批也不应只保存在 prompt。执行工具时核验当前对象、批准版本与调用者；审批期间草稿已被替换，就不能沿用旧预览的同意。schema、路由、审批和领域授权分别回答不同问题。</p>
+<h2 id="常见误区">常见误区<a class="anchor" href="#常见误区" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><strong>把秘密放进工具描述</strong>：schema 会发给模型或观测系统。</li>
+<li><strong>返回无限大的结果</strong>：应摘要给模型，把原文放到外部存储或 artifact。</li>
+<li><strong>一个万能 SQL 工具</strong>：权限面过大，参数空间也太自由。</li>
+<li><strong>用 prompt 做授权</strong>：提示只能引导，不能阻止执行。</li>
+<li><strong>吞掉所有异常</strong>：模型收到“成功”会继续基于错误状态行动。</li>
+</ul>
+<h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><code>langchain_core/tools/base.py</code></li>
+<li><code>langchain_core/tools/convert.py</code></li>
+<li><code>langgraph/prebuilt/tool_node.py</code></li>
+<li><code>langchain/agents/structured_output.py</code></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="03-messages.html"><small>上一章</small><strong>消息是运行时协议，不是聊天字符串</strong></a><a class="next" href="05-runnables.html"><small>下一章</small><strong>Runnable 与 LCEL：统一调用表面</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>读前说明：这本书怎么读</a><a href="../chapters/01-two-layers.html"><span>01</span>两层框架，一条执行链</a><a href="../chapters/02-loop-from-scratch.html"><span>02</span>不用框架，先写出 Agent 循环</a><a href="../chapters/03-messages.html"><span>03</span>消息是运行时协议，不是聊天字符串</a><a href="../chapters/04-tools.html"><span>04</span>工具调用：Schema、执行与结果回填</a><a href="../chapters/05-runnables.html"><span>05</span>Runnable 与 LCEL：统一调用表面</a><a href="../chapters/06-create-agent.html"><span>06</span>create_agent 到底创建了什么</a><a href="../chapters/07-stategraph.html"><span>07</span>StateGraph：状态、节点、边与 reducer</a><a href="../chapters/08-control-flow.html"><span>08</span>路由、循环与 Command</a><a href="../chapters/09-pregel.html"><span>09</span>Pregel：图在运行时如何前进</a><a href="../chapters/10-persistence.html"><span>10</span>检查点与 Store：两种记忆边界</a><a href="../chapters/11-interrupts.html"><span>11</span>中断、重放与人工审批</a><a href="../chapters/12-streaming.html"><span>12</span>流式输出不是一种流</a><a href="../chapters/13-subgraphs.html"><span>13</span>子图与多 Agent：先隔离上下文</a><a href="../chapters/14-project.html"><span>14</span>端到端：本地研究助手</a><a href="../chapters/15-production.html"><span>15</span>生产检查表与源码阅读路线</a><a href="../chapters/appendix-glossary.html"><span>A</span>术语与 API 速查</a><a href="../chapters/appendix-sources.html"><span>B</span>来源、版本与原创性说明</a></nav>
+</dialog>
+<footer class="site-footer">基于官方源码快照独立撰写 · LangChain 1.4.2 · LangGraph 1.2.12</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

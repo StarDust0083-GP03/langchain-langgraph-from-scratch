@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="LangChain 与 LangGraph 源码驱动中文电子书">
+<title>来源、版本与原创性说明 · LangChain × LangGraph</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">LC×LG</span><span>LangChain × LangGraph</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Appendix</div><div class="rail-title">来源、版本与原创性说明</div><ol><li><a href="#正文中的证据怎样区分">正文中的证据怎样区分</a></li><li><a href="#本地源码">本地源码</a></li><li><a href="#官方文档">官方文档</a></li><li><a href="#结构参考">结构参考</a></li><li><a href="#事实强度">事实强度</a></li><li><a href="#版本限制">版本限制</a></li><li><a href="#更新本书时的核对顺序">更新本书时的核对顺序</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">附录 B</div><h1>来源、版本与原创性说明</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 8 分钟</div></header><div class="prose"><h2 id="正文中的证据怎样区分">正文中的证据怎样区分<a class="anchor" href="#正文中的证据怎样区分" aria-label="链接到本节">#</a></h2>
+<p>源码入口对应本书锁定版本中的结构与调用路径；状态合并、审批故障等推演用于解释机制，不表示所有场景都经过在线服务实测。离线示例验证确定性控制流，没有验证真实模型质量、供应商兼容、生产持久化或外部发布事务。</p>
+<p>将示例接入产品时，需要另外做目标 provider 合同、进程重启恢复与业务权限测试。正文指出的幂等键、版本核验和数据清理是应用设计责任，不能因图能继续运行就认定这些能力已经自动完成。</p>
+<h2 id="本地源码">本地源码<a class="anchor" href="#本地源码" aria-label="链接到本节">#</a></h2>
+<pre><code class="language-text">sources/repos/langchain
+sources/repos/langgraph
+</code></pre>
+<p>下载方式为官方 GitHub 仓库的浅克隆。生成本书时的提交：</p>
+<ul>
+<li>LangChain <code>877ad8c7bfa3f74377caa6fd33cbc20687e0052f</code></li>
+<li>LangGraph <code>1afaca35a0d4962fb0203a0e9133a07ffd6a553c</code></li>
+</ul>
+<p>完整统计保存在 <code>sources/inventory.json</code>。源码版权和许可证归原项目所有，两个仓库均包含各自的 MIT LICENSE。本书不复制大段实现，只引用 API 名称、文件路径和必要的短代码形状。</p>
+<h2 id="官方文档">官方文档<a class="anchor" href="#官方文档" aria-label="链接到本节">#</a></h2>
+<p>本地归档及 URL 索引：</p>
+<ul>
+<li><code>sources/web/sources.tsv</code></li>
+<li><code>sources/web/*.md</code></li>
+</ul>
+<p>重点页面包括：</p>
+<ol>
+<li><a href="https://docs.langchain.com/oss/python/langchain/overview">LangChain overview</a></li>
+<li><a href="https://docs.langchain.com/oss/python/langchain/agents">Agents</a></li>
+<li><a href="https://docs.langchain.com/oss/python/langchain/component-architecture">Component architecture</a></li>
+<li><a href="https://docs.langchain.com/oss/python/langchain/messages">Messages</a></li>
+<li><a href="https://docs.langchain.com/oss/python/langchain/models">Models</a></li>
+<li><a href="https://docs.langchain.com/oss/python/langchain/tools">Tools</a></li>
+<li><a href="https://docs.langchain.com/oss/python/langchain/structured-output">Structured output</a></li>
+<li><a href="https://docs.langchain.com/oss/python/langchain/middleware/overview">Middleware</a></li>
+<li><a href="https://docs.langchain.com/oss/python/langchain/context-engineering">Context engineering</a></li>
+<li><a href="https://docs.langchain.com/oss/python/langgraph/overview">LangGraph overview</a></li>
+<li><a href="https://docs.langchain.com/oss/python/langgraph/graph-api">Graph API</a></li>
+<li><a href="https://docs.langchain.com/oss/python/langgraph/functional-api">Functional API</a></li>
+<li><a href="https://docs.langchain.com/oss/python/langgraph/pregel">Pregel runtime</a></li>
+<li><a href="https://docs.langchain.com/oss/python/langgraph/persistence">Persistence</a></li>
+<li><a href="https://docs.langchain.com/oss/python/langgraph/interrupts">Interrupts</a></li>
+<li><a href="https://docs.langchain.com/oss/python/langgraph/streaming">Streaming</a></li>
+<li><a href="https://docs.langchain.com/oss/python/langgraph/use-subgraphs">Subgraphs</a></li>
+<li><a href="https://docs.langchain.com/oss/python/langgraph/fault-tolerance">Fault tolerance</a></li>
+</ol>
+<p>网页会更新，本地归档用于说明本书写作时看到的版本，不代替最新官方文档。</p>
+<h2 id="结构参考">结构参考<a class="anchor" href="#结构参考" aria-label="链接到本节">#</a></h2>
+<p>以下二手材料只用于比较教学顺序和读者常见疑问：</p>
+<ul>
+<li><a href="https://blog.langchain.com/langgraph/">LangGraph announcement</a></li>
+<li><a href="https://realpython.com/langgraph-python/">Real Python: Build Stateful AI Agents With LangGraph</a></li>
+</ul>
+<p>本书没有复用这些页面的段落、示例业务、标题体系或插图。章节以本地源码调用链重新组织，贯穿案例和可运行代码为本书原创。</p>
+<h2 id="事实强度">事实强度<a class="anchor" href="#事实强度" aria-label="链接到本节">#</a></h2>
+<p>正文中的信息按以下优先级判断：</p>
+<ol>
+<li>当前源码和测试直接体现的行为；</li>
+<li>当前官方文档承诺的公开语义；</li>
+<li>官方博客给出的设计背景；</li>
+<li>本书基于前述材料给出的工程建议。</li>
+</ol>
+<p>工程建议使用“建议、适合、通常”等措辞，不伪装成框架保证。provider 能力、云部署和价格等易变信息不做静态大全。</p>
+<h2 id="版本限制">版本限制<a class="anchor" href="#版本限制" aria-label="链接到本节">#</a></h2>
+<p>本书重点覆盖 Python 版本：</p>
+<ul>
+<li><code>langchain 1.4.2</code></li>
+<li><code>langchain-core 1.6.4</code></li>
+<li><code>langgraph 1.2.12</code></li>
+<li><code>langgraph-checkpoint 4.2.0</code></li>
+</ul>
+<p>不覆盖：</p>
+<ul>
+<li>LangChain.js 与 LangGraph.js 的 API 差异；</li>
+<li>0.x 时代所有 legacy chain 和 memory 类；</li>
+<li>LangSmith 托管服务的完整运维；</li>
+<li>每个模型 provider 的全部参数；</li>
+<li>未来版本对 beta 接口的修改。</li>
+</ul>
+<h2 id="更新本书时的核对顺序">更新本书时的核对顺序<a class="anchor" href="#更新本书时的核对顺序" aria-label="链接到本节">#</a></h2>
+<ol>
+<li><code>git pull</code> 后记录新 commit，不覆盖旧快照事实。</li>
+<li>比较各 <code>pyproject.toml</code> 版本和依赖范围。</li>
+<li>搜索 deprecated 与 breaking change。</li>
+<li>运行 <code>examples/</code> 和 <code>wiki/verify.py</code>。</li>
+<li>检查 Agent 工厂图形、StateGraph channel、checkpoint 格式和 stream event。</li>
+<li>只修改受影响章节，在版本说明中记录差异。</li>
+</ol>
+<p>读者应把本书当作源码导读和工程心智模型，而不是固定版本 API reference。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="appendix-glossary.html"><small>上一章</small><strong>术语与 API 速查</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>读前说明：这本书怎么读</a><a href="../chapters/01-two-layers.html"><span>01</span>两层框架，一条执行链</a><a href="../chapters/02-loop-from-scratch.html"><span>02</span>不用框架，先写出 Agent 循环</a><a href="../chapters/03-messages.html"><span>03</span>消息是运行时协议，不是聊天字符串</a><a href="../chapters/04-tools.html"><span>04</span>工具调用：Schema、执行与结果回填</a><a href="../chapters/05-runnables.html"><span>05</span>Runnable 与 LCEL：统一调用表面</a><a href="../chapters/06-create-agent.html"><span>06</span>create_agent 到底创建了什么</a><a href="../chapters/07-stategraph.html"><span>07</span>StateGraph：状态、节点、边与 reducer</a><a href="../chapters/08-control-flow.html"><span>08</span>路由、循环与 Command</a><a href="../chapters/09-pregel.html"><span>09</span>Pregel：图在运行时如何前进</a><a href="../chapters/10-persistence.html"><span>10</span>检查点与 Store：两种记忆边界</a><a href="../chapters/11-interrupts.html"><span>11</span>中断、重放与人工审批</a><a href="../chapters/12-streaming.html"><span>12</span>流式输出不是一种流</a><a href="../chapters/13-subgraphs.html"><span>13</span>子图与多 Agent：先隔离上下文</a><a href="../chapters/14-project.html"><span>14</span>端到端：本地研究助手</a><a href="../chapters/15-production.html"><span>15</span>生产检查表与源码阅读路线</a><a href="../chapters/appendix-glossary.html"><span>A</span>术语与 API 速查</a><a href="../chapters/appendix-sources.html"><span>B</span>来源、版本与原创性说明</a></nav>
+</dialog>
+<footer class="site-footer">基于官方源码快照独立撰写 · LangChain 1.4.2 · LangGraph 1.2.12</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

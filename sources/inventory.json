@@ -1,0 +1,24 @@
+{
+  "langchain": {
+    "commit": "877ad8c7bfa3f74377caa6fd33cbc20687e0052f",
+    "commit_date": "2026-09-22",
+    "files": 3164,
+    "python_files": 2610,
+    "python_lines": 411455,
+    "test_python_files": 845
+  },
+  "langgraph": {
+    "commit": "1afaca35a0d4962fb0203a0e9133a07ffd6a553c",
+    "commit_date": "2026-09-22",
+    "files": 675,
+    "python_files": 455,
+    "python_lines": 189488,
+    "test_python_files": 195
+  },
+  "packages": {
+    "langchain": "1.4.2",
+    "langchain-core": "1.6.4",
+    "langgraph": "1.2.12",
+    "langgraph-checkpoint": "4.2.0"
+  }
+}

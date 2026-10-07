@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="LangChain 与 LangGraph 源码驱动中文电子书">
+<title>Runnable 与 LCEL：统一调用表面 · LangChain × LangGraph</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">LC×LG</span><span>LangChain × LangGraph</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 05</div><div class="rail-title">Runnable 与 LCEL：统一调用表面</div><ol><li><a href="#一套接口">一套接口</a></li><li><a href="#顺序与并行">顺序与并行</a></li><li><a href="#配置如何传播">配置如何传播</a></li><li><a href="#流式传播有条件">流式传播有条件</a></li><li><a href="#重试放在最小的不稳定边界">重试放在最小的不稳定边界</a></li><li><a href="#runnable-与-langgraph-的连接">Runnable 与 LangGraph 的连接</a></li><li><a href="#何时用-lcel-何时用图">何时用 LCEL，何时用图</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 05 章</div><h1>Runnable 与 LCEL：统一调用表面</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 10 分钟</div></header><div class="prose"><p>Runnable 的价值不是管道运算符本身，而是把不同组件放到同一个执行协议里。源码对它的定义是“一项可以调用、批处理、流式处理、变换和组合的工作单元”。</p>
+<h2 id="一套接口">一套接口<a class="anchor" href="#一套接口" aria-label="链接到本节">#</a></h2>
+<p>一个 Runnable 通常暴露：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>方法</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>invoke</code> / <code>ainvoke</code></td>
+<td>单输入同步或异步调用</td>
+</tr>
+<tr>
+<td><code>batch</code> / <code>abatch</code></td>
+<td>多输入批处理</td>
+</tr>
+<tr>
+<td><code>stream</code> / <code>astream</code></td>
+<td>增量产出</td>
+</tr>
+<tr>
+<td><code>with_retry</code></td>
+<td>包装重试策略</td>
+</tr>
+<tr>
+<td><code>with_config</code></td>
+<td>绑定 tag、metadata、并发配置等</td>
+</tr>
+<tr>
+<td><code>get_graph</code></td>
+<td>查看组合结构</td>
+</tr>
+</tbody></table></div>
+<p>默认实现会提供一些退化路径，例如异步方法可能在线程池里调用同步实现。统一表面不等于统一性能，provider 或组件只有覆写原生 batch/stream 才能得到对应优化。</p>
+<h2 id="顺序与并行">顺序与并行<a class="anchor" href="#顺序与并行" aria-label="链接到本节">#</a></h2>
+<p>LCEL 用 <code>|</code> 构造 <code>RunnableSequence</code>：</p>
+<pre><code class="language-python">from langchain_core.runnables import RunnableLambda
+
+normalize = RunnableLambda(lambda s: s.strip().lower())
+length = RunnableLambda(len)
+chain = normalize | length
+
+assert chain.invoke(&quot;  LangGraph  &quot;) == 9
+</code></pre>
+<p>字典出现在序列中时会被提升为 <code>RunnableParallel</code>，同一个输入送给多个分支：</p>
+<pre><code class="language-python">inspect = normalize | {
+    &quot;length&quot;: RunnableLambda(len),
+    &quot;prefix&quot;: RunnableLambda(lambda s: s[:4]),
+}
+</code></pre>
+<p>并行不是数据依赖分析。字典中的分支彼此独立，如果一个分支需要另一个分支的输出，应改成后续 sequence 或显式图节点。</p>
+<h3 id="并行组合怎样形成下一步输入">并行组合怎样形成下一步输入<a class="anchor" href="#并行组合怎样形成下一步输入" aria-label="链接到本节">#</a></h3>
+<p>前面的 inspect 把同一份规范字符串分别交给 length 与 prefix，等分支结果收集后形成字典。它没有先算 length 再让 prefix 读取长度。需要这种依赖时，应把字典结果交给后续 sequence；运行得快或先返回，不会改变依赖关系。</p>
+<p>batch 同样要区分执行协议与 provider 的服务批处理。框架可以并发调用多个输入，但供应商是否合并请求、是否限流，由具体实现决定。增加并发可能提高等待效率，也可能更快触发配额，不能只凭接口名字预测吞吐。</p>
+<h2 id="配置如何传播">配置如何传播<a class="anchor" href="#配置如何传播" aria-label="链接到本节">#</a></h2>
+<p>Runnable config 承载 callback、tag、metadata、最大并发和可配置字段。组合调用时，框架把配置向子 Runnable 传播，所以一次顶层调用能形成完整 trace。</p>
+<p>业务状态不应塞进 config。可观测元数据、执行参数与业务数据应分开：</p>
+<ul>
+<li>输入和 State：会影响业务结果的数据；</li>
+<li>Runtime context：本次 run 的依赖或身份；</li>
+<li>Runnable config：执行与追踪配置。</li>
+</ul>
+<p>把 user ID 只放在 trace metadata 里，然后在工具里当作授权依据，是危险的边界混用。</p>
+<h2 id="流式传播有条件">流式传播有条件<a class="anchor" href="#流式传播有条件" aria-label="链接到本节">#</a></h2>
+<p>序列能否逐段流式输出，取决于每个组件是否实现可转换的流式接口。中间插入一个只支持完整输入的普通函数，可能让下游必须等它完成后再开始。</p>
+<p>因此遇到“模型支持 streaming，但页面仍最后一次性出现”时，应逐段检查：</p>
+<ol>
+<li>模型是否真的产出 chunk；</li>
+<li>parser 是否等待完整消息；</li>
+<li>RunnableLambda 是否缓存全部输入；</li>
+<li>应用是否消费了正确的 stream mode；</li>
+<li>网络代理是否缓冲响应。</li>
+</ol>
+<h3 id="一个缓冲步骤会怎样改变流式体验">一个缓冲步骤会怎样改变流式体验<a class="anchor" href="#一个缓冲步骤会怎样改变流式体验" aria-label="链接到本节">#</a></h3>
+<p>假设模型逐字输出，后面的 parser 却需要完整 JSON 才能解析。整体链会等到对象结束，用户看到的便不是逐字结果。流式能力需要每个步骤支持增量转换；一个只处理完整输入的函数就可能成为缓冲边界。</p>
+<p>这不一定是缺陷。审批结果或工具参数本来就需要完整校验才能执行。设计时区分哪些增量仅用于展示、哪些结果必须原子地形成，不要为页面更快而提前执行半个对象。</p>
+<h2 id="重试放在最小的不稳定边界">重试放在最小的不稳定边界<a class="anchor" href="#重试放在最小的不稳定边界" aria-label="链接到本节">#</a></h2>
+<pre><code class="language-python">model_step = model.with_retry(stop_after_attempt=3)
+chain = prompt | model_step | parser
+</code></pre>
+<p>如果只模型调用可能遇到限流，就只重试模型。把整条链重试会再次执行前面的检索甚至外部副作用。重试范围越大，幂等要求越高。</p>
+<p>同理，图节点级 retry policy 应包住可安全重放的工作单元，而不是整个业务流程。</p>
+<h2 id="runnable-与-langgraph-的连接">Runnable 与 LangGraph 的连接<a class="anchor" href="#runnable-与-langgraph-的连接" aria-label="链接到本节">#</a></h2>
+<p>LangGraph 节点可以是普通 callable 或 Runnable。编译后的图本身也实现 Runnable，因此可以：</p>
+<ul>
+<li>在图节点中调用模型 Runnable；</li>
+<li>把一段 LCEL chain 作为节点；</li>
+<li>从外部用 <code>invoke</code>、<code>stream</code>、<code>batch</code> 调图；</li>
+<li>让 callback 和配置穿过两层。</li>
+</ul>
+<p>这就是两个项目共享执行表面的关键。LangChain 组件不需要知道自己正处于图的哪个 super-step，LangGraph 也不需要理解节点内部是 prompt 还是数据库查询。</p>
+<h2 id="何时用-lcel-何时用图">何时用 LCEL，何时用图<a class="anchor" href="#何时用-lcel-何时用图" aria-label="链接到本节">#</a></h2>
+<p>用 LCEL 表示无环的数据变换，特别是“输入经过一串组件得到输出”。出现以下情况时转向图：</p>
+<ul>
+<li>需要循环或条件分支；</li>
+<li>需要持久化中间状态；</li>
+<li>需要人工中断和恢复；</li>
+<li>多个节点共同更新显式业务状态；</li>
+<li>需要从特定步骤重放或查看历史。</li>
+</ul>
+<p>不要为了画图把三步纯转换拆成三十个节点，也不要用嵌套 RunnableBranch 隐藏一个本来应显式展示的业务状态机。</p>
+<h3 id="重试整条链-为什么可能重复已经成功的工作">重试整条链，为什么可能重复已经成功的工作<a class="anchor" href="#重试整条链-为什么可能重复已经成功的工作" aria-label="链接到本节">#</a></h3>
+<p>检索成功、模型超时，若重试最外层链，检索也重新运行；前一步若是扣款，风险更高。将重试包在最小故障单元，可减少重复费用与副作用，但前后结果仍要有清晰输入输出。Runnable 的重试包装不自动推断哪些操作安全。</p>
+<p>当流程需要保存中间结果、等待人工决定或回到修订步骤时，用图表达这些边界更直观；固定的文本变换组合仍适合 LCEL。不必为了统一外观，把可靠性需求藏进一个复杂 lambda。</p>
+<h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><code>langchain_core/runnables/base.py</code></li>
+<li><code>langchain_core/runnables/config.py</code></li>
+<li><code>langchain_core/runnables/retry.py</code></li>
+<li><code>langgraph/_internal/_runnable.py</code></li>
+</ul>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="04-tools.html"><small>上一章</small><strong>工具调用：Schema、执行与结果回填</strong></a><a class="next" href="06-create-agent.html"><small>下一章</small><strong>create_agent 到底创建了什么</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>读前说明：这本书怎么读</a><a href="../chapters/01-two-layers.html"><span>01</span>两层框架，一条执行链</a><a href="../chapters/02-loop-from-scratch.html"><span>02</span>不用框架，先写出 Agent 循环</a><a href="../chapters/03-messages.html"><span>03</span>消息是运行时协议，不是聊天字符串</a><a href="../chapters/04-tools.html"><span>04</span>工具调用：Schema、执行与结果回填</a><a href="../chapters/05-runnables.html"><span>05</span>Runnable 与 LCEL：统一调用表面</a><a href="../chapters/06-create-agent.html"><span>06</span>create_agent 到底创建了什么</a><a href="../chapters/07-stategraph.html"><span>07</span>StateGraph：状态、节点、边与 reducer</a><a href="../chapters/08-control-flow.html"><span>08</span>路由、循环与 Command</a><a href="../chapters/09-pregel.html"><span>09</span>Pregel：图在运行时如何前进</a><a href="../chapters/10-persistence.html"><span>10</span>检查点与 Store：两种记忆边界</a><a href="../chapters/11-interrupts.html"><span>11</span>中断、重放与人工审批</a><a href="../chapters/12-streaming.html"><span>12</span>流式输出不是一种流</a><a href="../chapters/13-subgraphs.html"><span>13</span>子图与多 Agent：先隔离上下文</a><a href="../chapters/14-project.html"><span>14</span>端到端：本地研究助手</a><a href="../chapters/15-production.html"><span>15</span>生产检查表与源码阅读路线</a><a href="../chapters/appendix-glossary.html"><span>A</span>术语与 API 速查</a><a href="../chapters/appendix-sources.html"><span>B</span>来源、版本与原创性说明</a></nav>
+</dialog>
+<footer class="site-footer">基于官方源码快照独立撰写 · LangChain 1.4.2 · LangGraph 1.2.12</footer>
+<script src="../assets/reader.js"></script>
+</body></html>
