@@ -2,7 +2,7 @@
 <html lang="zh-CN" data-theme="auto"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark"><meta name="description" content="LangChain 与 LangGraph 源码驱动中文电子书">
-<title>端到端：本地研究助手 · LangChain × LangGraph</title>
+<title>完整案例：观测申请的证据与审批 · LangChain × LangGraph</title>
 <link rel="stylesheet" href="../assets/reader.css">
 </head><body data-chapter="true">
 <div class="progress" aria-hidden="true"></div>
@@ -16,119 +16,151 @@
     <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
     <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
   </nav>
-</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 14</div><div class="rail-title">端到端：本地研究助手</div><ol><li><a href="#需求">需求</a></li><li><a href="#图形">图形</a></li><li><a href="#为什么计划和检索分开">为什么计划和检索分开</a></li><li><a href="#首次运行">首次运行</a></li><li><a href="#恢复审批">恢复审批</a></li><li><a href="#替换成真实模型">替换成真实模型</a></li><li><a href="#替换成真实检索">替换成真实检索</a></li><li><a href="#从内存切到生产存储">从内存切到生产存储</a></li><li><a href="#测试分层">测试分层</a></li><li><a href="#运行">运行</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 14 章</div><h1>端到端：本地研究助手</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 10 分钟</div></header><div class="prose"><p>本章把前面的概念装进一个不依赖远程模型的工作流。目标不是展示生成质量，而是验证状态、路由、checkpoint 和 interrupt 的真实行为。</p>
-<p>完整代码位于 <code>examples/research_assistant.py</code>。</p>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 14</div><div class="rail-title">完整案例：观测申请的证据与审批</div><ol><li><a href="#需求">需求</a></li><li><a href="#图形">图形</a></li><li><a href="#为什么计划和检索分开">为什么计划和检索分开</a></li><li><a href="#首次运行">首次运行</a></li><li><a href="#恢复审批">恢复审批</a></li><li><a href="#替换成真实模型">替换成真实模型</a></li><li><a href="#替换成真实检索">替换成真实检索</a></li><li><a href="#从内存切到生产存储">从内存切到生产存储</a></li><li><a href="#测试分层">测试分层</a></li><li><a href="#运行">运行</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 14 章</div><h1>完整案例：观测申请的证据与审批</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 12 分钟</div></header><div class="prose"><p>本章将天文台观测申请组织成一个可运行的研究与审批流程。它读取两条教学资料，计算预算，生成待审草稿，拒绝后修订，批准后生成本地回执。模型行为全部由确定性代码代替，LangGraph 的状态、检查点和中断则是真实 API。</p>
+<p>完整入口仍为 <code>examples/research_assistant.py</code>，离线测试在 <code>examples/test_examples.py</code>。示例不占用真实望远镜资源，也不根据天文坐标判断可见性。</p>
 <h2 id="需求">需求<a class="anchor" href="#需求" aria-label="链接到本节">#</a></h2>
-<p>输入一个问题，系统完成：</p>
-<ol>
-<li>从问题生成检索计划；</li>
-<li>查询本地小型语料；</li>
-<li>生成草稿；</li>
-<li>暂停并等待人工审阅；</li>
-<li>通过则发布，拒绝则修订后再次审阅。</li>
-</ol>
-<p>状态如下：</p>
-<pre><code class="language-python">class ResearchState(TypedDict):
-    question: str
-    plan: list[str]
-    notes: Annotated[list[str], operator.add]
-    draft: str
-    approved: bool
-</code></pre>
-<p><code>notes</code> 使用追加 reducer，其余字段使用默认覆盖。<code>question</code> 在输入后保持稳定，<code>draft</code> 可被修订节点覆盖。</p>
-<h2 id="图形">图形<a class="anchor" href="#图形" aria-label="链接到本节">#</a></h2>
-<pre><code class="language-text">START -&gt; plan -&gt; search -&gt; draft -&gt; review(interrupt)
-                                      │
-                         approve ─────┴──── reject
-                            │                  │
-                            ▼                  ▼
-                         publish            revise
-                            │                  │
-                            ▼                  └──&gt; review
-                           END
-</code></pre>
-<p>review 返回 <code>Command</code>，同时写入 <code>approved</code> 并选择下一节点。这比在外部再写一个条件函数更贴近“审阅决定就是本节点结果”的业务含义。</p>
-<h2 id="为什么计划和检索分开">为什么计划和检索分开<a class="anchor" href="#为什么计划和检索分开" aria-label="链接到本节">#</a></h2>
-<p>当前离线实现很短，合并成一个函数也能工作。仍然拆开，是因为它们有不同的工程边界：</p>
-<ul>
-<li>plan 可由模型生成，需要结构化输出与预算；</li>
-<li>search 访问资料系统，需要超时、权限和引用；</li>
-<li>两者的重试策略不同；</li>
-<li>调试时要判断是计划错了还是检索没命中。</li>
-</ul>
-<p>节点不是按代码行数拆，而是按恢复、观测和失败语义拆。</p>
-<h3 id="沿一份草稿跟踪状态怎样变化">沿一份草稿跟踪状态怎样变化<a class="anchor" href="#沿一份草稿跟踪状态怎样变化" aria-label="链接到本节">#</a></h3>
-<p>输入时只有问题；plan 写检索意图，search 为 notes 增加材料，draft 根据它们生成正文。review 不负责重新检索，它把当前草稿交给人决定。批准后进入 publish；示例中的这个节点不实际对外发布。拒绝后 revise 覆盖草稿，再回到 review。</p>
-<p>notes 是累计字段，draft 是当前视图，所以同样一次更新使用不同 reducer。若 revise 又追加全部旧 notes，材料会重复；若 draft 也累计，发布端就难以确认哪份是当前版本。状态设计直接影响最后的业务结果。</p>
-<h2 id="首次运行">首次运行<a class="anchor" href="#首次运行" aria-label="链接到本节">#</a></h2>
-<pre><code class="language-python">config = {&quot;configurable&quot;: {&quot;thread_id&quot;: &quot;demo-thread&quot;}}
-paused = graph.invoke(
-    {&quot;question&quot;: &quot;LangChain 和 LangGraph 如何分工？&quot;, &quot;notes&quot;: []},
-    config,
-)
-</code></pre>
-<p>执行到 review 时，<code>interrupt()</code> 让图暂停。此时草稿已经进入 checkpoint，但 publish 没有运行。</p>
-<pre><code class="language-python">snapshot = graph.get_state(config)
-assert snapshot.next == (&quot;review&quot;,)
-</code></pre>
-<p>这里 <code>next</code> 表示待恢复任务，不是“review 从未开始”。节点在恢复时可能重放，所有 interrupt 前的代码都应满足重放安全。</p>
-<h2 id="恢复审批">恢复审批<a class="anchor" href="#恢复审批" aria-label="链接到本节">#</a></h2>
-<pre><code class="language-python">finished = graph.invoke(
-    Command(resume={&quot;approved&quot;: True}),
-    config,
-)
+<p>默认输入研究 Halpha 申请，采用 6 帧、每帧 180 秒、1800 秒窗口。教学规则 <code>SIM-TIME-4@r1</code> 给出读出 20 秒和校准 300 秒，结果为 1500 秒。另一个来源 <code>SIM-FILTER-2@r1</code> 记录需要核对真实滤镜配置。</p>
+<p>图要区分四种结束：获批后本地发布、无资料、预算超限、三版均被拒绝。审批前回执必须为空，拒绝修订不得重复检索材料。状态的关键部分如下，其余可选字段见完整文件：</p>
+<pre><code class="language-python">from operator import add
+from typing import Annotated, TypedDict
 
-assert finished[&quot;approved&quot;] is True
+class Finding(TypedDict):
+    source: str
+    revision: str
+    text: str
+
+class ResearchState(TypedDict, total=False):
+    question: str
+    proposal_id: str
+    notes: Annotated[list[Finding], add]
+    draft: str
+    total_s: int
+    revision: int
+    approved: bool
+    receipt: str
+    status: str
+</code></pre>
+<p><code>total=False</code> 允许最初只提供少数字段，并不自动补默认值。<code>plan()</code> 校验参数后写入默认值，后续节点才能读取。<code>notes</code> 累计新增资料，当前草稿与修订号则覆盖更新。</p>
+<h2 id="图形">图形<a class="anchor" href="#图形" aria-label="链接到本节">#</a></h2>
+<p>用状态转换表列出每条有业务含义的出口：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>当前节点</th>
+<th>条件或结果</th>
+<th>后继</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>plan</td>
+<td>参数校验完成并选择研究项</td>
+<td>search</td>
+</tr>
+<tr>
+<td>search</td>
+<td>返回版本化资料记录</td>
+<td>draft</td>
+</tr>
+<tr>
+<td>draft</td>
+<td>有证据且 1500 不超过 1800</td>
+<td>review</td>
+</tr>
+<tr>
+<td>draft</td>
+<td>无证据或预算超限</td>
+<td>cancel，再结束</td>
+</tr>
+<tr>
+<td>review</td>
+<td>严格布尔批准，版本匹配</td>
+<td>publish，再结束</td>
+</tr>
+<tr>
+<td>review</td>
+<td>拒绝且 revision 小于 3</td>
+<td>revise，再回 review</td>
+</tr>
+<tr>
+<td>review</td>
+<td>第三版仍被拒绝</td>
+<td>cancel，再结束</td>
+</tr>
+</tbody></table></div>
+<p><code>review</code> 使用 <code>Command</code>，因此没有通往 publish 的无条件固定边。若误加这条边，拒绝也可能调度发布，测试必须检查这项负面行为。</p>
+<h2 id="为什么计划和检索分开">为什么计划和检索分开<a class="anchor" href="#为什么计划和检索分开" aria-label="链接到本节">#</a></h2>
+<p>计划节点选择 <code>filter</code> 与 <code>timing</code> 两个研究项，检索节点只按这些项读取 fixture。尽管代码很短，它们代表不同合同：计划决定研究范围，检索提供实际观察。换成模型或远程资料库后，两者会有不同的错误与重试政策。</p>
+<p>本例只在问题包含 Halpha 时生成研究项，未知问题得到空计划，不使用万能默认资料。这样无命中分支可直接验证，也不会把与问题无关的内容包装成研究成功。</p>
+<h3 id="沿一份草稿跟踪状态怎样变化">沿一份草稿跟踪状态怎样变化<a class="anchor" href="#沿一份草稿跟踪状态怎样变化" aria-label="链接到本节">#</a></h3>
+<p>输入只有 <code>question</code> 和空 <code>notes</code>。plan 写默认申请号、帧数、曝光、窗口、revision=1 和空回执；search 新增两条资料；draft 写 total_s=1500、草稿与 awaiting_review。</p>
+<p>审阅节点首次中断，尚未写 approved=True。拒绝 v1 后，意见写入状态，revise 把 revision 变为 2，并在草稿中增加具体意见和待核验条件，notes 仍为两条。批准 v2 后，publish 生成 <code>local:SIM-OBS-17:v2</code>。这是稳定的本地结果标识，不是数据库幂等实现或远程申请确认。</p>
+<h2 id="首次运行">首次运行<a class="anchor" href="#首次运行" aria-label="链接到本节">#</a></h2>
+<p>下面可在项目根目录和已安装 LangGraph 的解释器中运行：</p>
+<pre><code class="language-python">from examples.research_assistant import build_graph
+
+graph = build_graph()
+config = {&quot;configurable&quot;: {&quot;thread_id&quot;: &quot;proposal-walkthrough&quot;}}
+paused = graph.invoke({&quot;question&quot;: &quot;研究 Halpha 申请&quot;, &quot;notes&quot;: []}, config)
+assert paused[&quot;total_s&quot;] == 1500
+assert paused[&quot;receipt&quot;] == &quot;&quot;
+assert paused[&quot;__interrupt__&quot;]
+assert graph.get_state(config).next == (&quot;review&quot;,)
+</code></pre>
+<p><code>next</code> 表示待恢复工作，不能据此断言 review 从未执行。它已经到达中断位置，恢复会重入节点。计算与草稿放在前序节点，有助于保持审批预览稳定。</p>
+<h2 id="恢复审批">恢复审批<a class="anchor" href="#恢复审批" aria-label="链接到本节">#</a></h2>
+<p>沿用前面的 graph 和 config，先拒绝再批准：</p>
+<pre><code class="language-python">from langgraph.types import Command
+
+revised = graph.invoke(Command(resume={
+    &quot;approved&quot;: False, &quot;revision&quot;: 1,
+    &quot;feedback&quot;: &quot;说明未核验真实目标高度。&quot;,
+}), config)
+assert revised[&quot;revision&quot;] == 2
+assert revised[&quot;receipt&quot;] == &quot;&quot;
+finished = graph.invoke(Command(resume={&quot;approved&quot;: True, &quot;revision&quot;: 2}), config)
+assert finished[&quot;receipt&quot;] == &quot;local:SIM-OBS-17:v2&quot;
 assert graph.get_state(config).next == ()
 </code></pre>
-<p>必须使用同一个 <code>thread_id</code>，否则运行时找不到原暂停点，只会把它当作另一条 thread。</p>
+<p>申请地址不能更换，revision 必须对应当前草稿。示例还拒绝 <code>approved=&quot;false&quot;</code> 这种字符串，防止 Python 真值转换误判。完整授权不在例子内，真实 API 应先验证审阅者资格，再调用图。</p>
 <h3 id="拒绝并不意味着从头重跑">拒绝并不意味着从头重跑<a class="anchor" href="#拒绝并不意味着从头重跑" aria-label="链接到本节">#</a></h3>
-<p>恢复拒绝决定后，已有计划和材料仍在状态中，流程可进入修订，而非重新执行整套研究。若审阅意见指出材料错误，才应选择重检索的路径。这个示例主要验证审批控制流，真实产品还需把意见和版本作为状态保存。</p>
-<p>同一个 thread 代表同一流程实例，不意味着任何请求都能提交 resume。API 应验证审阅者和对象版本，再构造 Command。图负责暂停位置，应用负责批准资格。</p>
+<p>普通文字修订只需处理当前草稿和意见，已确认规则不必再查。示例返回 review 时，检索计划和两条 notes 保持不变，测试断言材料数量仍为 2。</p>
+<p>如果意见指出规则错误，真实产品应增加重新研究分支，而非仅附加说明。图的合同应区分“表达修改”和“证据失效”；本例只演示前者，修订不意味着已经修正任何真实观测可行性问题。</p>
 <h2 id="替换成真实模型">替换成真实模型<a class="anchor" href="#替换成真实模型" aria-label="链接到本节">#</a></h2>
-<p>把 plan 与 draft 替换为模型节点时，保持状态合同不变：</p>
-<pre><code class="language-python">def draft(state: ResearchState) -&gt; dict:
-    prompt = build_prompt(state[&quot;question&quot;], state[&quot;notes&quot;])
-    response = model.invoke(prompt)
-    return {&quot;draft&quot;: response.content}
+<p>可以先替换 draft，保持它只返回 <code>draft</code> 等约定字段。以下是应用接口伪代码，不是可直接运行的 provider 示例：</p>
+<pre><code class="language-python">def model_draft(state):
+    request = compose_research_request(
+        question=state[&quot;question&quot;], findings=state[&quot;notes&quot;],
+        computed_total_s=state[&quot;total_s&quot;],
+    )
+    response = configured_model.invoke(request)
+    return {&quot;draft&quot;: extract_text(response)}
 </code></pre>
-<p>不要让模型节点顺便写 store、发送通知和决定权限。纯生成步骤更容易重试，也更容易用 fake model 测试。</p>
+<p>数值预算继续由确定性代码计算，不让模型随意改公式；模型补充解释和未核验项。接入后做输出 schema、引用完整性和 provider 合同测试，不能只检查文字流畅。</p>
 <h2 id="替换成真实检索">替换成真实检索<a class="anchor" href="#替换成真实检索" aria-label="链接到本节">#</a></h2>
-<p>真实 search 节点应返回带来源的记录，而不是裸字符串：</p>
-<pre><code class="language-python">class Finding(TypedDict):
-    text: str
-    uri: str
-    revision: str | None
-    score: float | None
-</code></pre>
-<p>最终草稿引用 URI，审批 UI 才能回到证据。embedding 相似度是排序信号，不是事实置信度。</p>
+<p>真实资料结果至少包含稳定来源、revision 和文本，必要时再有 URI、内容指纹和召回分数。图应保留足以复核审批依据的字段，不能只返回“找到了相关文档”。</p>
+<p>召回分数用于排序，不等于规则真实或适用。检索服务要按可信组身份授权，明确空结果、权限拒绝与超时；原文过大时保留受控外部引用，并固定版本，避免审批等待期间 URI 指向另一份内容。</p>
 <h2 id="从内存切到生产存储">从内存切到生产存储<a class="anchor" href="#从内存切到生产存储" aria-label="链接到本节">#</a></h2>
-<p>示例使用 <code>InMemorySaver</code>，仅验证当前进程。生产替换 checkpointer 时，图代码可以保持不变，但需要额外验证：</p>
-<ul>
-<li>saver 的 <code>setup()</code> 或 migration；</li>
-<li>多实例并发和连接池；</li>
-<li>thread ID 长度与索引；</li>
-<li>数据加密与保留策略；</li>
-<li>旧 checkpoint 在新图版本下是否可恢复。</li>
-</ul>
+<p>当前 <code>build_graph()</code> 每次创建新 <code>InMemorySaver</code>，因此新对象看不到旧实例，进程退出也无法恢复。切换持久 saver 需要调整构造与连接生命周期，而不只是更换一个导入名。</p>
+<p>应测试初始化和迁移、连接池、序列化、同 thread 并发策略、数据保留以及旧图版本恢复。真实发布还需要独立业务记录和幂等服务，本地 <code>receipt</code> 字段不能代替跨系统事务。</p>
 <h3 id="接上真实依赖后-先保持图的合同不变">接上真实依赖后，先保持图的合同不变<a class="anchor" href="#接上真实依赖后-先保持图的合同不变" aria-label="链接到本节">#</a></h3>
-<p>模型计划仍应输出受限检索条目，检索器仍返回带引用的材料，草稿节点仍写同一字段。先固定这些合同，再替换底层实现，便能区分模型表达变化与图逻辑错误。工具超时、空结果和资料拒绝分别返回明确状态。</p>
-<p>换持久 saver 后，应在暂停点退出进程，再用原 thread 恢复。只在同一 Python 对象上跑批准分支，无法验证数据库连接、序列化和升级兼容。将空的 publish 节点换成真实发布后，还要用业务幂等身份保护，而非相信示例只调用一次。</p>
+<p>一次只替换一个边界：模型仍产出受限草稿，检索仍返回版本化 findings，审批仍提交严格布尔值和 revision。保留原离线回归，有助于区分控制流回退和外部能力差异。</p>
+<p>持久性验证必须跨进程：进程 A 跑到 review 后退出，进程 B 用同一保存地址和兼容图继续。外部提交则注入响应丢失，确认重试读取原回执。完成这些之前，只能说接入了依赖，不能说恢复和副作用已可靠。</p>
 <h2 id="测试分层">测试分层<a class="anchor" href="#测试分层" aria-label="链接到本节">#</a></h2>
 <h3 id="节点测试">节点测试<a class="anchor" href="#节点测试" aria-label="链接到本节">#</a></h3>
-<p>直接调用 plan、search、draft，输入固定 state，断言 partial update。</p>
+<p>直接检查 plan 的默认值与拒绝输入，search 的来源记录，draft 的 1500 秒计算，以及 publish 在未批准时抛错。这些断言固定领域含义，不需要驱动整张图。</p>
 <h3 id="图测试">图测试<a class="anchor" href="#图测试" aria-label="链接到本节">#</a></h3>
-<p>使用内存 saver，断言暂停点、状态合并、approve/reject 路由和最终输出。</p>
+<p>使用内存 saver 检查首次暂停、拒绝后 v2、批准后结束、thread 隔离、三次拒绝上限、无资料和超预算直接退出。错误批准值与过期 revision 必须不产生回执。</p>
 <h3 id="集成测试">集成测试<a class="anchor" href="#集成测试" aria-label="链接到本节">#</a></h3>
-<p>接真实模型或检索服务，但保留调用次数和费用上限。不要把所有单元测试都变成在线模型评测。</p>
+<p>接真实资料库、模型和持久 saver 后，分别核对权限、消息协议、序列化与进程恢复。真实模型测试应限制请求和费用，并评估来源与未决项，不能用它替代确定性路由回归。</p>
 <h2 id="运行">运行<a class="anchor" href="#运行" aria-label="链接到本节">#</a></h2>
-<p>项目验证脚本会创建本地虚拟环境并安装浅克隆源码。也可以在已安装 LangGraph 的环境里直接执行：</p>
+<p>在具备 LangGraph 依赖的环境中保留原 CLI，并运行新增测试入口：</p>
 <pre><code class="language-bash">python examples/research_assistant.py
+python examples/test_examples.py
 </code></pre>
-<p>它会完成一次暂停和恢复，并打印最终草稿。拒绝分支可把 resume 值改为 <code>{&quot;approved&quot;: False}</code> 观察再次暂停。</p>
+<p>第一个命令演示拒绝 v1 后批准 v2，打印草稿和本地回执；第二个使用标准库 unittest 运行离线断言。若使用项目虚拟环境，可将 <code>python</code> 改为 <code>.venv/bin/python</code>。安装依赖不属于离线测试本身，准备好环境后，这两个入口不访问远程模型或天文台服务。</p>
 </div><nav class="chapter-nav" aria-label="章节导航"><a href="13-subgraphs.html"><small>上一章</small><strong>子图与多 Agent：先隔离上下文</strong></a><a class="next" href="15-production.html"><small>下一章</small><strong>生产检查表与源码阅读路线</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
   <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
-  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>读前说明：这本书怎么读</a><a href="../chapters/01-two-layers.html"><span>01</span>两层框架，一条执行链</a><a href="../chapters/02-loop-from-scratch.html"><span>02</span>不用框架，先写出 Agent 循环</a><a href="../chapters/03-messages.html"><span>03</span>消息是运行时协议，不是聊天字符串</a><a href="../chapters/04-tools.html"><span>04</span>工具调用：Schema、执行与结果回填</a><a href="../chapters/05-runnables.html"><span>05</span>Runnable 与 LCEL：统一调用表面</a><a href="../chapters/06-create-agent.html"><span>06</span>create_agent 到底创建了什么</a><a href="../chapters/07-stategraph.html"><span>07</span>StateGraph：状态、节点、边与 reducer</a><a href="../chapters/08-control-flow.html"><span>08</span>路由、循环与 Command</a><a href="../chapters/09-pregel.html"><span>09</span>Pregel：图在运行时如何前进</a><a href="../chapters/10-persistence.html"><span>10</span>检查点与 Store：两种记忆边界</a><a href="../chapters/11-interrupts.html"><span>11</span>中断、重放与人工审批</a><a href="../chapters/12-streaming.html"><span>12</span>流式输出不是一种流</a><a href="../chapters/13-subgraphs.html"><span>13</span>子图与多 Agent：先隔离上下文</a><a href="../chapters/14-project.html"><span>14</span>端到端：本地研究助手</a><a href="../chapters/15-production.html"><span>15</span>生产检查表与源码阅读路线</a><a href="../chapters/appendix-glossary.html"><span>A</span>术语与 API 速查</a><a href="../chapters/appendix-sources.html"><span>B</span>来源、版本与原创性说明</a></nav>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>读前说明：这本书怎么读</a><a href="../chapters/01-two-layers.html"><span>01</span>四层栈，一条执行链</a><a href="../chapters/02-loop-from-scratch.html"><span>02</span>不用框架，先写出 Agent 循环</a><a href="../chapters/03-messages.html"><span>03</span>消息是运行时协议，不是聊天字符串</a><a href="../chapters/04-tools.html"><span>04</span>工具调用：Schema、执行与结果回填</a><a href="../chapters/05-runnables.html"><span>05</span>Runnable 与 LCEL：统一调用表面</a><a href="../chapters/06-create-agent.html"><span>06</span>create_agent 到底创建了什么</a><a href="../chapters/07-stategraph.html"><span>07</span>StateGraph：状态、节点、边与 reducer</a><a href="../chapters/08-control-flow.html"><span>08</span>路由、循环与 Command</a><a href="../chapters/09-pregel.html"><span>09</span>Pregel：图在运行时如何前进</a><a href="../chapters/10-persistence.html"><span>10</span>检查点与 Store：两种记忆边界</a><a href="../chapters/11-interrupts.html"><span>11</span>中断、重放与人工审批</a><a href="../chapters/12-streaming.html"><span>12</span>流式输出不是一种流</a><a href="../chapters/13-subgraphs.html"><span>13</span>子图与多 Agent：先隔离上下文</a><a href="../chapters/14-project.html"><span>14</span>完整案例：观测申请的证据与审批</a><a href="../chapters/15-production.html"><span>15</span>生产检查表与源码阅读路线</a><a href="../chapters/16-deep-agents.html"><span>16</span>Deep Agents：create_agent 之上的 harness</a><a href="../chapters/17-multi-agent-mcp.html"><span>17</span>多 Agent 与 MCP：协作模式与工具互联</a><a href="../chapters/appendix-glossary.html"><span>A</span>术语与 API 速查</a><a href="../chapters/appendix-sources.html"><span>B</span>来源、版本与原创性说明</a></nav>
 </dialog>
 <footer class="site-footer">基于官方源码快照独立撰写 · LangChain 1.4.2 · LangGraph 1.2.12</footer>
 <script src="../assets/reader.js"></script>

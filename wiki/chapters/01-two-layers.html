@@ -2,7 +2,7 @@
 <html lang="zh-CN" data-theme="auto"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark"><meta name="description" content="LangChain 与 LangGraph 源码驱动中文电子书">
-<title>两层框架，一条执行链 · LangChain × LangGraph</title>
+<title>四层栈，一条执行链 · LangChain × LangGraph</title>
 <link rel="stylesheet" href="../assets/reader.css">
 </head><body data-chapter="true">
 <div class="progress" aria-hidden="true"></div>
@@ -16,90 +16,123 @@
     <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
     <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
   </nav>
-</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 01</div><div class="rail-title">两层框架，一条执行链</div><ol><li><a href="#从应用表面往下看">从应用表面往下看</a></li><li><a href="#langchain-的四块底座">LangChain 的四块底座</a></li><li><a href="#langgraph-增加了什么">LangGraph 增加了什么</a></li><li><a href="#三种使用层级">三种使用层级</a></li><li><a href="#什么时候不需要它们">什么时候不需要它们</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 01 章</div><h1>两层框架，一条执行链</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 10 分钟</div></header><div class="prose"><p>一句话区分两个项目：<strong>LangChain 负责让模型、消息、工具和应用组件说同一种语言；LangGraph 负责让这些组件在有状态、可循环、可暂停的程序里可靠运行。</strong></p>
-<p>它们不是二选一。当前 <code>langchain</code> 包的依赖声明直接包含 <code>langgraph</code>，而 <code>create_agent()</code> 返回 <code>CompiledStateGraph</code>。你可以只用 LangGraph，也可以在 LangGraph 节点里调用任意 Python 函数，但 LangChain 已经准备好了常见模型与工具协议。</p>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 01</div><div class="rail-title">四层栈，一条执行链</div><ol><li><a href="#从应用表面往下看">从应用表面往下看</a></li><li><a href="#langchain-的四块底座">LangChain 的四块底座</a></li><li><a href="#langgraph-增加了什么">LangGraph 增加了什么</a></li><li><a href="#三种使用层级">三种使用层级</a></li><li><a href="#什么时候不需要它们">什么时候不需要它们</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 01 章</div><h1>四层栈，一条执行链</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 14 分钟</div></header><div class="prose"><p>天文台助手既要读资料，又要等待人确认申请。前者涉及模型、消息和工具的协作，后者涉及流程状态的保存与推进。LangChain 与 LangGraph 分别把这两组责任组织起来，因此同一个应用常会同时使用它们。</p>
+<p>在本书快照中，<code>create_agent()</code> 的产物是 <code>CompiledStateGraph</code>，<code>langchain</code> 的依赖也包含 <code>langgraph</code>。Deep Agents 在这个组合上增加预装能力；LangSmith 从运行旁路收集轨迹、支持评估等平台工作。四个名字不对应四个必须逐一经过的网络服务，最小离线程序可以完全不连接平台。</p>
 <h2 id="从应用表面往下看">从应用表面往下看<a class="anchor" href="#从应用表面往下看" aria-label="链接到本节">#</a></h2>
-<pre><code class="language-text">你的产品
-  │  输入、权限、业务数据、UI
-  ▼
-LangChain Agent harness
-  │  模型、工具、消息、中间件、结构化输出
-  ▼
-LangGraph StateGraph
-  │  状态、节点、边、路由、checkpoint、interrupt
-  ▼
-Pregel runtime
-     Plan -&gt; Execution -&gt; Update -&gt; 下一 super-step
-</code></pre>
-<p>这张图里最容易被忽略的是 harness。官方当前的定义很直接：Agent 是模型调用工具的循环，harness 是围绕循环的提示、工具和中间件。真正决定 Agent 是否可控的，往往不是模型那一行，而是“此时给模型看什么、允许它调用什么、失败后怎样继续”。</p>
-<h3 id="用一次研究任务看清每层负责什么">用一次研究任务看清每层负责什么<a class="anchor" href="#用一次研究任务看清每层负责什么" aria-label="链接到本节">#</a></h3>
-<p>用户问某份文档是否支持一个结论。消息对象保留问题与角色，聊天模型提出检索工具请求，工具执行器读取被授权的资料，再把结果配回请求。LangChain 提供这些对象之间的统一协议。模型猜中了工具名还不够，执行层仍要核验参数和读取权限。</p>
-<p>如果查到的材料不够，流程需要再次检索；草稿完成后还可能等待审批。这时 LangGraph 保存计划、已读材料和待执行步骤，决定继续循环还是暂停。Pregel 则把图转换成具体任务，执行、合并结果，再推进下一步。应用仍拥有业务权限与发布规则，框架不会替你判断这份结论是否真的可信。</p>
-<h2 id="langchain-的四块底座">LangChain 的四块底座<a class="anchor" href="#langchain-的四块底座" aria-label="链接到本节">#</a></h2>
-<h3 id="消息">消息<a class="anchor" href="#消息" aria-label="链接到本节">#</a></h3>
-<p><code>HumanMessage</code>、<code>AIMessage</code>、<code>ToolMessage</code> 等类型保存的不只是文本。<code>AIMessage</code> 可以携带结构化 <code>tool_calls</code>，<code>ToolMessage</code> 用 <code>tool_call_id</code> 把执行结果配回原请求。多模态内容、token usage 和 provider 元数据也附着在消息上。</p>
-<h3 id="模型">模型<a class="anchor" href="#模型" aria-label="链接到本节">#</a></h3>
-<p><code>BaseChatModel</code> 统一 <code>invoke</code>、<code>stream</code>、<code>batch</code> 等调用表面。provider 包负责把统一消息翻译成具体 API，再把响应还原成标准消息。统一接口降低切换成本，但不会抹平供应商能力差异。</p>
-<h3 id="工具">工具<a class="anchor" href="#工具" aria-label="链接到本节">#</a></h3>
-<p>工具由名称、描述、输入 schema 和执行函数组成。模型只提出调用意图，真正执行工具的是应用或 <code>ToolNode</code>。这条边界很重要：模型不能因为生成了一段 JSON 就自动获得系统权限。</p>
-<h3 id="runnable">Runnable<a class="anchor" href="#runnable" aria-label="链接到本节">#</a></h3>
-<p>Runnable 把“可调用单元”统一成同步、异步、批处理和流式接口，并支持顺序、并行、重试与配置传播。模型、prompt、parser、Retriever 和编译后的图都可以出现在这套调用表面上。</p>
-<h2 id="langgraph-增加了什么">LangGraph 增加了什么<a class="anchor" href="#langgraph-增加了什么" aria-label="链接到本节">#</a></h2>
-<p>普通函数调用只关心当前栈。Agent 工作流还需要回答：</p>
-<ul>
-<li>当前对话和中间结果存在哪里？</li>
-<li>两个节点并行写同一字段时如何合并？</li>
-<li>工具失败后从哪里重试？</li>
-<li>进程退出后如何从上一步继续？</li>
-<li>人工审批等待一天后如何恢复？</li>
-</ul>
-<p>LangGraph 把这些问题变成显式概念：State、Node、Edge、Reducer、Checkpointer、Store、Interrupt。图不是为了画图，而是为了给状态转换一个可检查、可保存的边界。</p>
-<h3 id="为什么组件协议不能替代运行时">为什么组件协议不能替代运行时<a class="anchor" href="#为什么组件协议不能替代运行时" aria-label="链接到本节">#</a></h3>
-<p>普通顺序调用能完成“搜索后总结”，但进程在搜索之后退出，Python 调用栈通常不会自动恢复。把步骤建成状态图，可以在明确边界保存已完成结果和待处理任务。它解决的是运行连续性，不是模型正确率；保存了一份错误草稿，恢复后仍是一份错误草稿。</p>
-<p>反过来，只有图而没有统一消息和工具协议，节点之间也可能传递不兼容的数据。图负责何时运行，组件协议负责运行时传什么。两层配合后，调试可以分别查消息转换、工具执行和状态推进，不必把所有失败都称为“Agent 出错”。</p>
-<h2 id="三种使用层级">三种使用层级<a class="anchor" href="#三种使用层级" aria-label="链接到本节">#</a></h2>
+<p>用申请 <code>SIM-OBS-17</code> 的几个产物标出责任，比按产品名称堆叠方框更容易检查边界。</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
-<th>层级</th>
-<th>适合场景</th>
-<th>代价</th>
+<th>产物或动作</th>
+<th>负责组织它的层</th>
+<th>仍由应用承担的部分</th>
 </tr>
 </thead>
 <tbody><tr>
-<td><code>create_agent</code></td>
-<td>标准模型工具循环，需要中间件和记忆</td>
-<td>控制流形状相对固定</td>
+<td>6 帧、180 秒、1800 秒窗口</td>
+<td>产品输入与领域规则</td>
+<td>单位、范围、申请人身份</td>
 </tr>
 <tr>
-<td><code>StateGraph</code> / Functional API</td>
-<td>自定义路由、审批、并行、长流程</td>
-<td>需要自己定义状态边界</td>
+<td>检索请求、调用 ID、工具结果</td>
+<td>LangChain 组件协议</td>
+<td>工具可见范围及结果真实性</td>
 </tr>
 <tr>
-<td>直接使用 Pregel</td>
-<td>运行时研究或特殊通道语义</td>
-<td>API 低层，维护成本高</td>
+<td>计划文件、技能说明、窄任务委托</td>
+<td>可选的 Deep Agents harness</td>
+<td>backend 权限与实际需要的能力</td>
+</tr>
+<tr>
+<td>已完成研究、待审 v1、后续修订</td>
+<td>LangGraph 状态图</td>
+<td>状态含义、审批资格、结束原因</td>
+</tr>
+<tr>
+<td>本步任务与下一步可见值</td>
+<td>Pregel 运行时</td>
+<td>reducer 是否符合领域含义</td>
+</tr>
+<tr>
+<td>节点耗时、失败尝试与评估记录</td>
+<td>LangSmith 或其他观测设施</td>
+<td>脱敏、采样、访问控制</td>
 </tr>
 </tbody></table></div>
-<p>大多数项目应从第一层开始，只有控制流真的超出标准循环时才下沉。直接使用 Pregel 通常不是“更专业”，而是主动承担编译器本来替你做的工作。</p>
+<p>Harness 指围绕模型工具循环设置的提示、工具、中间件和上下文策略。它会影响模型能看什么、能请求什么，不能自动让外部资源变得安全。比如预装文件工具之后，实际可读目录仍取决于 backend，而不是 Agent 名称。</p>
+<h3 id="用一次研究任务看清每层负责什么">用一次研究任务看清每层负责什么<a class="anchor" href="#用一次研究任务看清每层负责什么" aria-label="链接到本节">#</a></h3>
+<p>用户要求判断一份 Halpha 申请是否装得进 30 分钟窗口。LangChain 消息保存原问题，模型接口返回两个工具请求，执行器将资料与计算结果分别关联到调用 ID。估算得到 1500 秒后，模型才有依据说明还有 300 秒余量。</p>
+<p>LangGraph 可以要求先保存草稿，再到审批节点暂停；拒绝时只修订草稿，不重新检索已经确认的规则。Pregel 负责执行这些已激活节点，并让更新在后续步骤可见。即使完整轨迹都被 LangSmith 记录，也不能由此推出目标当晚可见，因为示例没有执行天体位置计算。观测只能记录做过什么。</p>
+<h2 id="langchain-的四块底座">LangChain 的四块底座<a class="anchor" href="#langchain-的四块底座" aria-label="链接到本节">#</a></h2>
+<h3 id="消息">消息<a class="anchor" href="#消息" aria-label="链接到本节">#</a></h3>
+<p>一次申请中，用户要求、模型提议和工具观察具有不同来源。<code>HumanMessage</code>、<code>AIMessage</code>、<code>ToolMessage</code> 保留这种身份区别。工具结果通过 <code>tool_call_id</code> 指向请求，usage 和响应元数据则帮助解释模型调用的成本或来源。</p>
+<p>如果把两次估算都改写成普通文本，应用便难以确认 1500 秒对应 6 帧还是另一个方案。消息对象让关系可被程序检查，但外部文档中的文字仍要作为不可信材料处理。</p>
+<h3 id="模型">模型<a class="anchor" href="#模型" aria-label="链接到本节">#</a></h3>
+<p><code>BaseChatModel</code> 为单次、批量和流式调用提供共同表面，provider 适配层负责协议转换。业务可以用统一消息调用不同模型，但目标 provider 是否支持并行工具或原生结构化输出，要单独核验。</p>
+<p>模型返回的内容只是一次推断。它选择 <code>estimate_time</code>，并不代表计算已经发生；它说申请合理，也不代表审批完成。把这两种状态区分开，才能替换模型而不改变领域规则。</p>
+<h3 id="工具">工具<a class="anchor" href="#工具" aria-label="链接到本节">#</a></h3>
+<p>工具把描述、输入 schema 与可执行函数关联起来。观测预算工具可公开 <code>frames</code> 和 <code>exposure_s</code>，服务端则注入可信申请人身份。模型负责提出参数，执行层检查范围、权限，再调用函数。</p>
+<p>名称和描述影响选择质量，执行函数控制实际边界。如果只把身份写进 prompt，工具服务仍接受任意申请编号，就没有形成可靠授权。相同工具接口可以包住本地计算或远程请求，副作用风险取决于后者实际做什么。</p>
+<h3 id="runnable">Runnable<a class="anchor" href="#runnable" aria-label="链接到本节">#</a></h3>
+<p>Runnable 允许组件通过 <code>invoke</code>、<code>ainvoke</code>、<code>stream</code>、<code>batch</code> 等表面组合起来。比如规范化资料查询、检索、构造提示和解析响应，可组成一个可追踪单元。</p>
+<p>接口一致不代表实现都原生流式或真正批处理。普通同步函数可能借线程运行异步入口，某个解析步骤也可能缓冲全部文本。性能和取消能力要追踪具体实现，不能由方法名字推断。</p>
+<h2 id="langgraph-增加了什么">LangGraph 增加了什么<a class="anchor" href="#langgraph-增加了什么" aria-label="链接到本节">#</a></h2>
+<p>申请流程包含多个时间尺度：检索用毫秒或秒，模型生成需要更久，人可能隔天才审批。普通函数调用栈很难横跨这些等待，图把可恢复位置表达为状态与待执行任务。</p>
+<p>State 保存当前草稿和材料，Node 产生局部更新，Edge 决定后继，Reducer 规定并发增量怎样合并。Checkpointer 记录 thread 的执行状态，Store 保存可跨申请读取的数据，Interrupt 把决定交到图外。每个概念都回答一个运行问题，不需要为了用全它们而增加字段。</p>
+<h3 id="为什么组件协议不能替代运行时">为什么组件协议不能替代运行时<a class="anchor" href="#为什么组件协议不能替代运行时" aria-label="链接到本节">#</a></h3>
+<p>工具协议能告诉执行器 1500 秒是哪个调用的结果，却不会在进程重启后自动找回待审 v1。反过来，图可以恢复草稿，但若工具结果 ID 配错，恢复的也是一份错误上下文。</p>
+<p>调试时可以用两个独立检查缩小范围：消息合同是否完整，状态转换是否在正确边界落盘。预算结果缺失先查工具回填，待审批申请变成新任务先查 thread 配置。组件协议和运行时在这两条路径上协作，不承担对方的全部责任。</p>
+<h2 id="三种使用层级">三种使用层级<a class="anchor" href="#三种使用层级" aria-label="链接到本节">#</a></h2>
+<p>业务入口可以按接管多少控制流来选择；Pregel 则是通常不必直接操作的底层。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>起点</th>
+<th>天文台场景中的适用需求</th>
+<th>接管的责任</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>create_deep_agent</code></td>
+<td>研究需要文件、任务清单和子任务</td>
+<td>检查默认工具与 backend，删除多余能力</td>
+</tr>
+<tr>
+<td><code>create_agent</code></td>
+<td>模型自主查规则、反复补资料</td>
+<td>定义工具、上下文、预算和错误策略</td>
+</tr>
+<tr>
+<td><code>StateGraph</code> 或 Functional API</td>
+<td>固定计算、独立核验、人工批准有明确顺序</td>
+<td>显式定义状态、依赖和恢复路径</td>
+</tr>
+<tr>
+<td>Pregel</td>
+<td>研究 channel 或特殊调度语义</td>
+<td>自己组织 actor 与 channel 拓扑</td>
+</tr>
+</tbody></table></div>
+<p>选择更低层意味着承担更多组装工作，不保证更高质量。标准循环若已覆盖资料问答，增加自定义路由只会扩大测试面。需要精确控制批准后才能生成提交请求时，显式业务图则能让这条约束更容易验证。</p>
 <h2 id="什么时候不需要它们">什么时候不需要它们<a class="anchor" href="#什么时候不需要它们" aria-label="链接到本节">#</a></h2>
-<p>如果应用只是一次 prompt 加一次模型调用，原生 SDK 更短。如果流程完全确定、没有模型路由，普通 Python 函数和任务队列通常更清楚。如果需要的是全文搜索而非 Agent，先把检索系统做好。</p>
-<p>框架的价值来自组合与运行保障，不来自 import 的数量。</p>
+<p>如果只是计算 <code>6 × 200 + 300</code>，一个 Python 函数足够。若用户只需在资料库里查关键词，先做好搜索与引用展示，不必强行让模型决定每一次查询。仅有一次文本改写时，provider SDK 也可能比完整 Agent 更合适。</p>
+<p>引入框架的理由应来自实际边界：是否组合多类组件，是否存在条件循环，是否需要跨请求恢复。一个稳定的任务队列已经能解决确定性后台工作时，也可以保留它，让图只处理确实需要的那部分交互。</p>
 <h3 id="怎样决定是否下沉到自定义图">怎样决定是否下沉到自定义图<a class="anchor" href="#怎样决定是否下沉到自定义图" aria-label="链接到本节">#</a></h3>
-<p>先写出一个无法用标准循环表达的真实需求。比如检索和数据库核验必须并行完成，再共同进入审批，这个依赖关系值得显式建图；只是希望换一个 prompt，通常用模型配置或中间件即可。每增加一个层级，都意味着自己接管更多状态和恢复责任，不能只凭图更复杂就认为设计更完整。</p>
+<p>把需求写成能失败的断言。比如“资料核验和时间预算都完成前，不得展示审批按钮”，这需要清楚的依赖与聚合；“回答语气更简洁”只改变模型请求，通常不用改图。</p>
+<p>再比较两种实现的恢复路径。如果标准循环内隐藏了大量阶段标志，每次恢复都要猜当前处于哪一步，拆图可能有益。如果只是为了让图更好看而拆分三次字符串处理，独立 checkpoint 与节点名称反而会增加维护成本。</p>
 <h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
+<p>从返回类型和依赖关系入手，可核对本章的分层判断：</p>
 <ul>
-<li><code>langchain/libs/core/langchain_core/messages/</code></li>
-<li><code>langchain/libs/core/langchain_core/runnables/base.py</code></li>
-<li><code>langchain/libs/langchain_v1/langchain/agents/factory.py</code></li>
-<li><code>langgraph/libs/langgraph/langgraph/graph/state.py</code></li>
-<li><code>langgraph/libs/langgraph/langgraph/pregel/main.py</code></li>
+<li><code>langchain/libs/langchain_v1/langchain/agents/factory.py</code>：定位图的返回值和构建过程。</li>
+<li><code>langchain/libs/core/langchain_core/messages/</code>：检查消息可携带的结构信息。</li>
+<li><code>langchain/libs/core/langchain_core/runnables/base.py</code>：查看调用协议及其默认实现。</li>
+<li><code>langgraph/libs/langgraph/langgraph/graph/state.py</code>：追踪构建器到编译图。</li>
+<li><code>langgraph/libs/langgraph/langgraph/pregel/main.py</code>：查执行入口，而非业务工具逻辑。</li>
+<li><code>deepagents</code> 包的 <code>create_deep_agent</code> 与 middleware：另行核对安装版本及默认能力。</li>
 </ul>
-<p>下一章先把框架拿掉，手写一遍最小 Agent 循环。看清循环之后，后面的封装才不会变成魔法。</p>
 </div><nav class="chapter-nav" aria-label="章节导航"><a href="00-preface.html"><small>上一章</small><strong>读前说明：这本书怎么读</strong></a><a class="next" href="02-loop-from-scratch.html"><small>下一章</small><strong>不用框架，先写出 Agent 循环</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
   <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
-  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>读前说明：这本书怎么读</a><a href="../chapters/01-two-layers.html"><span>01</span>两层框架，一条执行链</a><a href="../chapters/02-loop-from-scratch.html"><span>02</span>不用框架，先写出 Agent 循环</a><a href="../chapters/03-messages.html"><span>03</span>消息是运行时协议，不是聊天字符串</a><a href="../chapters/04-tools.html"><span>04</span>工具调用：Schema、执行与结果回填</a><a href="../chapters/05-runnables.html"><span>05</span>Runnable 与 LCEL：统一调用表面</a><a href="../chapters/06-create-agent.html"><span>06</span>create_agent 到底创建了什么</a><a href="../chapters/07-stategraph.html"><span>07</span>StateGraph：状态、节点、边与 reducer</a><a href="../chapters/08-control-flow.html"><span>08</span>路由、循环与 Command</a><a href="../chapters/09-pregel.html"><span>09</span>Pregel：图在运行时如何前进</a><a href="../chapters/10-persistence.html"><span>10</span>检查点与 Store：两种记忆边界</a><a href="../chapters/11-interrupts.html"><span>11</span>中断、重放与人工审批</a><a href="../chapters/12-streaming.html"><span>12</span>流式输出不是一种流</a><a href="../chapters/13-subgraphs.html"><span>13</span>子图与多 Agent：先隔离上下文</a><a href="../chapters/14-project.html"><span>14</span>端到端：本地研究助手</a><a href="../chapters/15-production.html"><span>15</span>生产检查表与源码阅读路线</a><a href="../chapters/appendix-glossary.html"><span>A</span>术语与 API 速查</a><a href="../chapters/appendix-sources.html"><span>B</span>来源、版本与原创性说明</a></nav>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>读前说明：这本书怎么读</a><a href="../chapters/01-two-layers.html"><span>01</span>四层栈，一条执行链</a><a href="../chapters/02-loop-from-scratch.html"><span>02</span>不用框架，先写出 Agent 循环</a><a href="../chapters/03-messages.html"><span>03</span>消息是运行时协议，不是聊天字符串</a><a href="../chapters/04-tools.html"><span>04</span>工具调用：Schema、执行与结果回填</a><a href="../chapters/05-runnables.html"><span>05</span>Runnable 与 LCEL：统一调用表面</a><a href="../chapters/06-create-agent.html"><span>06</span>create_agent 到底创建了什么</a><a href="../chapters/07-stategraph.html"><span>07</span>StateGraph：状态、节点、边与 reducer</a><a href="../chapters/08-control-flow.html"><span>08</span>路由、循环与 Command</a><a href="../chapters/09-pregel.html"><span>09</span>Pregel：图在运行时如何前进</a><a href="../chapters/10-persistence.html"><span>10</span>检查点与 Store：两种记忆边界</a><a href="../chapters/11-interrupts.html"><span>11</span>中断、重放与人工审批</a><a href="../chapters/12-streaming.html"><span>12</span>流式输出不是一种流</a><a href="../chapters/13-subgraphs.html"><span>13</span>子图与多 Agent：先隔离上下文</a><a href="../chapters/14-project.html"><span>14</span>完整案例：观测申请的证据与审批</a><a href="../chapters/15-production.html"><span>15</span>生产检查表与源码阅读路线</a><a href="../chapters/16-deep-agents.html"><span>16</span>Deep Agents：create_agent 之上的 harness</a><a href="../chapters/17-multi-agent-mcp.html"><span>17</span>多 Agent 与 MCP：协作模式与工具互联</a><a href="../chapters/appendix-glossary.html"><span>A</span>术语与 API 速查</a><a href="../chapters/appendix-sources.html"><span>B</span>来源、版本与原创性说明</a></nav>
 </dialog>
 <footer class="site-footer">基于官方源码快照独立撰写 · LangChain 1.4.2 · LangGraph 1.2.12</footer>
 <script src="../assets/reader.js"></script>

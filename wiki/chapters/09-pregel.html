@@ -16,86 +16,130 @@
     <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
     <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
   </nav>
-</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 09</div><div class="rail-title">Pregel：图在运行时如何前进</div><ol><li><a href="#bulk-synchronous-parallel">Bulk Synchronous Parallel</a></li><li><a href="#actor-与-channel">actor 与 channel</a></li><li><a href="#为什么本步写入不可见">为什么本步写入不可见</a></li><li><a href="#运行循环中的关键对象">运行循环中的关键对象</a></li><li><a href="#checkpoint-为什么适合放在步骤边界">checkpoint 为什么适合放在步骤边界</a></li><li><a href="#recursion-limit-计算什么">recursion limit 计算什么</a></li><li><a href="#deltachannel-的取舍">DeltaChannel 的取舍</a></li><li><a href="#直接用-pregel-吗">直接用 Pregel 吗</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 09 章</div><h1>Pregel：图在运行时如何前进</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 12 分钟</div></header><div class="prose"><p><code>StateGraph</code> 是用户友好的构建层，Pregel 是执行层。理解 Pregel 不要求直接使用它的低层 API，但能解释并行节点为什么看不到彼此的新值、checkpoint 为什么落在步骤边界，以及恢复为何可能重放节点。</p>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 09</div><div class="rail-title">Pregel：图在运行时如何前进</div><ol><li><a href="#bulk-synchronous-parallel">Bulk Synchronous Parallel</a></li><li><a href="#actor-与-channel">actor 与 channel</a></li><li><a href="#为什么本步写入不可见">为什么本步写入不可见</a></li><li><a href="#运行循环中的关键对象">运行循环中的关键对象</a></li><li><a href="#checkpoint-为什么适合放在步骤边界">checkpoint 为什么适合放在步骤边界</a></li><li><a href="#recursion-limit-计算什么">recursion limit 计算什么</a></li><li><a href="#deltachannel-的取舍">DeltaChannel 的取舍</a></li><li><a href="#直接用-pregel-吗">直接用 Pregel 吗</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 09 章</div><h1>Pregel：图在运行时如何前进</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 14 分钟</div></header><div class="prose"><p>观测规则检查已经返回，时间检查还在运行。此时最终结论能否读取前者的新结果？答案取决于任务所在的 super-step，而不取决于哪个线程更快。Pregel 用明确的执行和更新边界组织图，StateGraph 则把这些细节包装成状态、节点和边。</p>
+<p>本章不要求直接写底层 actor。目标是能解释一次并行执行的可见性，以及失败后为何不能把 Python 调用栈当作恢复依据。</p>
 <h2 id="bulk-synchronous-parallel">Bulk Synchronous Parallel<a class="anchor" href="#bulk-synchronous-parallel" aria-label="链接到本节">#</a></h2>
-<p>每个 super-step 分三阶段：</p>
-<pre><code class="language-text">┌────────┐    ┌──────────────┐    ┌────────┐
-│  Plan  │ -&gt; │  Execution   │ -&gt; │ Update │
-└────────┘    └──────────────┘    └────────┘
-  选 actor       并行运行           应用写入
-      ▲                                  │
-      └──────── 下一 super-step ─────────┘
-</code></pre>
+<p>BSP 将运行分成同步步骤。用教学申请画出两个步骤的状态截面：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>时间截面</th>
+<th>规则任务</th>
+<th>时间任务</th>
+<th>全局可见状态</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>步骤 k 计划后</td>
+<td>等待执行</td>
+<td>等待执行</td>
+<td>两项结果均未知</td>
+</tr>
+<tr>
+<td>步骤 k 执行中</td>
+<td>已产生规则结果</td>
+<td>仍计算预算</td>
+<td>仍是步骤 k 的输入快照</td>
+</tr>
+<tr>
+<td>步骤 k 更新后</td>
+<td>写入已合并</td>
+<td>写入已合并</td>
+<td>规则 r1，预算 1500 秒</td>
+</tr>
+<tr>
+<td>步骤 k+1</td>
+<td>聚合任务读取结果</td>
+<td>无需重算</td>
+<td>可以形成待审草稿</td>
+</tr>
+</tbody></table></div>
+<p>表中的快慢是教学推演，不是性能实测。关键是规则任务提前完成不改变本步其他任务读取的快照。</p>
 <h3 id="plan">Plan<a class="anchor" href="#plan" aria-label="链接到本节">#</a></h3>
-<p>根据输入 channel 或上一步更新的 channel，选择本步激活的 actor。没有触发条件的节点不会因为“存在于图中”就执行。</p>
+<p>计划阶段依据输入和 channel 的版本、触发关系准备可运行任务。节点存在于图里不代表每次都执行，未被激活的审核或取消节点不会自动运行。</p>
+<p>排查“节点没跑”时，先看前一步触发了什么和当前 <code>next</code>，而不是直接怀疑执行器漏调函数。输入、普通边和动态发送都可能产生任务，但路径需要符合编译后的触发机制。</p>
 <h3 id="execution">Execution<a class="anchor" href="#execution" aria-label="链接到本节">#</a></h3>
-<p>选中的 actor 并行运行，直到全部完成、某个失败或超时。此阶段产生的 channel 写入暂存在任务结果中，对同一步的其他 actor 不可见。</p>
+<p>选中的任务运行，并把结果作为待应用写入记录下来。执行可能涉及同步、异步或并发，某项失败或超时会影响本步推进。运行时不会让其他同一步任务读取这项任务尚未合并的更新。</p>
+<p>节点若直接改外部数据库，外部系统仍可能立即可见；BSP 的隔离针对图 channel，不是所有外部资源。这也是不能用并行 state 语义推断外部事务的原因。</p>
 <h3 id="update">Update<a class="anchor" href="#update" aria-label="链接到本节">#</a></h3>
-<p>运行时按 channel 规则合并写入，生成新的可见状态。随后决定下一步哪些 actor 被激活。</p>
-<p>当没有 actor 可执行且没有消息在传递时，图停止。</p>
+<p>执行结果按 channel 规则合并，形成后续可见值并影响下一批任务。默认单值字段遇到多写入可能报错，加法累计字段则按 reducer 处理。</p>
+<p>当没有后续可运行工作，运行可结束或处于等待外部恢复的状态。应用要区别终态与暂停：两者都可能令一次请求返回，但暂停 thread 仍有待恢复任务。</p>
 <h2 id="actor-与-channel">actor 与 channel<a class="anchor" href="#actor-与-channel" aria-label="链接到本节">#</a></h2>
-<p>Pregel actor 是 <code>PregelNode</code>，实现 Runnable 接口。它订阅 channel、读取值并写回 channel。StateGraph 编译时把节点函数和状态字段翻译成这些低层对象。</p>
-<p>常见 channel：</p>
-<ul>
-<li><code>LastValue</code>：保留最后一次写入，对应默认覆盖字段。</li>
-<li><code>BinaryOperatorAggregate</code>：用二元操作累计值。</li>
-<li><code>Topic</code>：发布订阅，可累计多个更新。</li>
-<li><code>EphemeralValue</code>：在步骤间传递临时值。</li>
-<li><code>DeltaChannel</code>：当前快照中的 beta 能力，只持久化增量并按需重建累计值。</li>
-</ul>
-<p>在日常 StateGraph 代码里，类型注解和 reducer 已经替你选择 channel。只有需要特殊存储语义时才应下沉。</p>
+<p>底层 <code>PregelNode</code> 组织可执行逻辑及其读取、订阅和写入关系。Channel 管理值与更新；StateGraph 编译器根据字段和路由建立这组对象。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Channel</th>
+<th>可类比的用途</th>
+<th>使用时要留意</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>LastValue</code></td>
+<td>当前草稿或单项预算</td>
+<td>不接受同一步多份竞争写入</td>
+</tr>
+<tr>
+<td><code>BinaryOperatorAggregate</code></td>
+<td>累积资料记录</td>
+<td>reducer 的代数和去重含义</td>
+</tr>
+<tr>
+<td><code>Topic</code></td>
+<td>发布多个观察</td>
+<td>是否跨步累计及读取形状</td>
+</tr>
+<tr>
+<td><code>EphemeralValue</code></td>
+<td>临时触发信息</td>
+<td>不能当成长期业务存储</td>
+</tr>
+<tr>
+<td><code>DeltaChannel</code></td>
+<td>增量持久化的累计值</td>
+<td>beta 及恢复格式约束</td>
+</tr>
+</tbody></table></div>
+<p>日常应用通常只需 schema 和 reducer。直接选择特殊 channel 之前，应确认默认语义确实无法满足需求，而非为了避免设计清楚字段。</p>
 <h2 id="为什么本步写入不可见">为什么本步写入不可见<a class="anchor" href="#为什么本步写入不可见" aria-label="链接到本节">#</a></h2>
-<p>如果一个并行节点能偶然看到另一个刚写出的值，业务结果就可能依赖线程调度。BSP 让同一步节点读取稳定快照，再在 Update 阶段统一合并结果。读取边界确定以后，还需为每个字段选择正确的合并规则。</p>
-<p>这带来一个设计规则：有先后数据依赖的工作必须放在不同 super-step。不要期待并行节点通过共享 state 即时通信。</p>
+<p>若时间任务有时能看到新规则、有时看不到，结果就受网络和线程调度影响。BSP 固定读取边界，使这项依赖必须写成跨步骤关系。规则决定开销时，应先核验规则，再执行时间计算；两者彼此独立时才适合并行。</p>
+<p>这种可见性不保证所有结果顺序都天然稳定。累计列表仍要自行按业务身份排序，外部查询也可能得到变化的数据。运行时固定的是步骤边界，重现业务结果还需要纯 reducer、版本化来源和明确输入。</p>
 <h3 id="两种并行更新的不同结果">两种并行更新的不同结果<a class="anchor" href="#两种并行更新的不同结果" aria-label="链接到本节">#</a></h3>
-<p>输入快照是 count=0，A、B 都读取它。两个任务分别产生增量 1，此时尚未相互可见。Update 阶段使用加法 channel 得到 2；使用单值覆盖 channel 则不能接受这种并发写法。同样的输入和任务，只改合并规则，就会改变运行是否合法。</p>
-<p>并行不会替业务决定如何合并。两个专家分别给“通过”和“拒绝”，没有自然相加的意义，应保存独立结果，让下一步审核节点选择。BSP 稳定了可见边界，reducer 和聚合逻辑才定义业务结果。</p>
+<p>设 <code>checked=0</code>，两项核验都返回增量 1。若字段使用加法累计，更新后为 2；若字段是默认单值，两个写入不能简单取“最后一个”，会构成并发更新冲突。</p>
+<p>但若返回的是两项 <code>eligible=True/False</code>，相加毫无意义。应把规则核验和预算核验保存在独立字段，聚合时要求二者均满足，并保留否决原因。相同运行机制需要不同合并设计，channel 不会猜业务意图。</p>
 <h2 id="运行循环中的关键对象">运行循环中的关键对象<a class="anchor" href="#运行循环中的关键对象" aria-label="链接到本节">#</a></h2>
-<p>阅读源码时可以沿这条路线：</p>
-<pre><code class="language-text">Pregel.invoke / stream
-    -&gt; PregelLoop 建立本次运行上下文
-    -&gt; prepare_next_tasks 选择任务
-    -&gt; PregelRunner 执行任务
-    -&gt; apply_writes 更新 channels
-    -&gt; checkpoint / emit stream
-    -&gt; tick 下一步
-</code></pre>
-<p>同步与异步、普通 invoke 与 stream 共享核心状态机，但执行器和事件出口不同。排查问题时先确认故障属于任务执行、写入合并、持久化还是消费端。</p>
+<p>阅读源码时可把问题分配给对象：入口在 <code>Pregel.invoke</code> 或流式方法；<code>PregelLoop</code> 管运行上下文和步骤；任务准备逻辑确定本步做什么；<code>PregelRunner</code> 执行；<code>apply_writes</code> 让结果成为 channel 值；保存与事件出口随后按当前持久化模式推进。</p>
+<p>这不是承诺每个流事件都严格晚于数据库持久提交的统一时间线。同步、异步持久化及事件类型会影响可观察时序，需在目标版本和配置下核对。看到一个节点更新事件，不能直接断言外部系统和检查点已经形成原子提交。</p>
 <h2 id="checkpoint-为什么适合放在步骤边界">checkpoint 为什么适合放在步骤边界<a class="anchor" href="#checkpoint-为什么适合放在步骤边界" aria-label="链接到本节">#</a></h2>
-<p>Update 完成后，所有 actor 的写入已经形成一致状态。这个边界适合持久化：恢复时从完整 super-step 之后继续，而不是尝试还原一半线程完成、一半仍运行的瞬间。</p>
-<p>如果进程在外部副作用之后、checkpoint 之前退出，恢复可能再次运行该节点。这就是工具和节点副作用必须幂等的根本原因之一。</p>
+<p>步骤更新完成后，可以描述一份一致状态和后续任务。恢复只需要读取这些值与任务信息，不必尝试还原正运行到某一行的 Python 线程。</p>
+<p>保存策略仍影响崩溃窗口。若副作用已发生但对应完成状态尚未可靠保存，恢复可能重新执行相关工作。持久化保证的是图状态可延续的边界，不会自动去重资源预留或通知。</p>
 <h3 id="步骤边界不是跨系统事务边界">步骤边界不是跨系统事务边界<a class="anchor" href="#步骤边界不是跨系统事务边界" aria-label="链接到本节">#</a></h3>
-<p>节点发出邮件，外部服务确认成功，进程在状态持久化前退出。checkpoint 仍指向此前步骤，恢复可能再调用邮件节点。运行时没有办法仅凭旧图状态知道邮件已经发过，因此业务幂等键必须在外部系统也有效。</p>
-<p>并行失败恢复还可能保留已经完成任务的 pending writes，实际重跑范围受任务和持久化机制影响。安全设计不应依赖某个节点碰巧没有重跑，应让允许重放的操作始终有正确业务语义。</p>
+<p>设申请服务已返回 <code>reservation-17</code>，进程在本地图状态持久化前退出。旧 checkpoint 不包含这个回执，但远程窗口已被占用。重启后提交节点再运行，必须按同一业务键查询或重用结果。</p>
+<p>并行恢复还可能利用已保存任务的 pending writes，避免重复成功支路。实际重跑范围由任务边界和保存结果决定，不宜简化为“全部重跑”或“成功项永不重跑”。测试应注入失败验证目标场景，业务操作始终保持可重放。</p>
 <h2 id="recursion-limit-计算什么">recursion limit 计算什么<a class="anchor" href="#recursion-limit-计算什么" aria-label="链接到本节">#</a></h2>
-<p>它限制图步骤，不等价于 Python 递归深度。一个 model -&gt; tools -&gt; model 循环会消耗多个 super-step。并行节点处于同一步，不一定按节点数逐个计数。</p>
-<p>设置过低会中断合法长流程，设置过高只会让错误循环运行更久。更好的做法是用业务字段表达剩余步骤、费用和截止时间，再把 recursion limit 留作总保险。</p>
+<p>这里的限制针对图 super-step，不是 Python 递归层数，也不是所有节点执行次数。两个并行核验处于同一步，模型和工具来回则通常跨多步。</p>
+<p>申请修订应另设版本上限，资料研究另设调用预算。把 recursion limit 从较小值调到很大，无法证明循环合理，只扩大最坏开销。记录最终结束原因和已用业务额度，比单独统计是否触发框架限制更有诊断意义。</p>
 <h2 id="deltachannel-的取舍">DeltaChannel 的取舍<a class="anchor" href="#deltachannel-的取舍" aria-label="链接到本节">#</a></h2>
-<p>对持续增长的消息列表，传统 checkpoint 可能每一步重复序列化完整列表。<code>DeltaChannel</code> 只写本步增量，并在读取时重建值，可减少写入体积。</p>
-<p>代价包括：</p>
-<ul>
-<li>reducer 变成批量 reducer，必须满足 batching invariant；</li>
-<li>无快照时读取需要重放增量；</li>
-<li>channel 格式影响 checkpoint 兼容性；</li>
-<li>当前文档标记为 beta，降级到不支持的版本会无法读取。</li>
-</ul>
-<p>只有观察到具体 checkpoint 体积问题后才值得采用。先用普通消息 reducer，测量，再优化。</p>
+<p>长会话的累计资料可能在每步 checkpoint 中反复写入。<code>DeltaChannel</code> 旨在持久化更新增量，再按需要重建累计值。对于每次只增加一个小观察、历史很长的字段，写入量可能降低；实际收益要测量，不能从概念直接推算。</p>
+<p>代价是读取重放成本、批量 reducer 约束和格式兼容。快照将其标为 beta，旧运行时未必能理解新格式。部署前要准备带真实更新分布的恢复测试和回退策略，而不是直接替换所有消息字段。</p>
 <h3 id="增量存储为什么对-reducer-提出更高要求">增量存储为什么对 reducer 提出更高要求<a class="anchor" href="#增量存储为什么对-reducer-提出更高要求" aria-label="链接到本节">#</a></h3>
-<p>若每次保存完整累计值，读取直接拿结果；只保存增量，则读取需要把多次更新重新合并。将更新分成一批或两批应得到相同业务结果，否则重建会受存储分组影响。依赖墙上时钟、随机数或外部查询的 reducer 很难满足这种要求。</p>
-<p>因此 DeltaChannel 的优化不仅是换一个类名，还涉及批处理不变量、格式兼容和读取成本。先证明 checkpoint 体积确实是瓶颈，再用已知更新序列验证完整与增量两种恢复结果。</p>
+<p>假设有更新序列 <code>a、b、c</code>，一次合并三项与先合并 <code>a、b</code> 再合并 <code>c</code> 应产生相同业务值。批处理分组变化若影响结果，重建就不再可靠。reducer 里读取当前时间、产生随机 ID 或查询外部规则，都会使旧更新在未来重建时可能变样。</p>
+<p>可以用固定输入序列比较多种分组，并核对完整快照与增量恢复的最终结果。列表去重还要定义稳定键与版本冲突政策，不能依赖恰好到达的先后顺序。优化存储前先把这些合同固定下来。</p>
 <h2 id="直接用-pregel-吗">直接用 Pregel 吗<a class="anchor" href="#直接用-pregel-吗" aria-label="链接到本节">#</a></h2>
-<p>官方源码和文档都给出相同建议：多数用户应使用 StateGraph 或 Functional API。直接 Pregel 适合运行时研究、自定义 channel 拓扑或框架作者。业务团队通常更需要清晰 schema 和节点，而不是手动接线 actor 与 channel。</p>
+<p>大部分观测助手需求在 StateGraph 或 Functional API 层就能表达。直接 Pregel 更适合研究 actor/channel 行为、开发特殊运行时组件，或验证框架机制。</p>
+<p>如果目的是“预算先算、人工后批”，下沉只会增加接线工作。先用高层图表达业务不变量，只有无法表达且已有最小反例时再考虑低层接口。</p>
 <h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
 <ul>
-<li><code>langgraph/pregel/main.py</code></li>
-<li><code>langgraph/pregel/_loop.py</code></li>
-<li><code>langgraph/pregel/_runner.py</code></li>
-<li><code>langgraph/pregel/_algo.py</code></li>
-<li><code>langgraph/channels/</code></li>
+<li><code>langgraph/pregel/main.py</code>：从调用、流式和运行参数进入。</li>
+<li><code>langgraph/pregel/_loop.py</code>：跟步骤推进、保存和恢复状态。</li>
+<li><code>langgraph/pregel/_runner.py</code>：观察并发任务与失败处理。</li>
+<li><code>langgraph/pregel/_algo.py</code>：检查任务准备及写入应用。</li>
+<li><code>langgraph/channels/</code>：对照不同字段更新合同。</li>
 </ul>
+<p>带着“本步谁读旧值、何时合并、失败留下什么”三个问题查找，会比从入口顺读全部实现更容易得到可验证结论。</p>
 </div><nav class="chapter-nav" aria-label="章节导航"><a href="08-control-flow.html"><small>上一章</small><strong>路由、循环与 Command</strong></a><a class="next" href="10-persistence.html"><small>下一章</small><strong>检查点与 Store：两种记忆边界</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
   <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
-  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>读前说明：这本书怎么读</a><a href="../chapters/01-two-layers.html"><span>01</span>两层框架，一条执行链</a><a href="../chapters/02-loop-from-scratch.html"><span>02</span>不用框架，先写出 Agent 循环</a><a href="../chapters/03-messages.html"><span>03</span>消息是运行时协议，不是聊天字符串</a><a href="../chapters/04-tools.html"><span>04</span>工具调用：Schema、执行与结果回填</a><a href="../chapters/05-runnables.html"><span>05</span>Runnable 与 LCEL：统一调用表面</a><a href="../chapters/06-create-agent.html"><span>06</span>create_agent 到底创建了什么</a><a href="../chapters/07-stategraph.html"><span>07</span>StateGraph：状态、节点、边与 reducer</a><a href="../chapters/08-control-flow.html"><span>08</span>路由、循环与 Command</a><a href="../chapters/09-pregel.html"><span>09</span>Pregel：图在运行时如何前进</a><a href="../chapters/10-persistence.html"><span>10</span>检查点与 Store：两种记忆边界</a><a href="../chapters/11-interrupts.html"><span>11</span>中断、重放与人工审批</a><a href="../chapters/12-streaming.html"><span>12</span>流式输出不是一种流</a><a href="../chapters/13-subgraphs.html"><span>13</span>子图与多 Agent：先隔离上下文</a><a href="../chapters/14-project.html"><span>14</span>端到端：本地研究助手</a><a href="../chapters/15-production.html"><span>15</span>生产检查表与源码阅读路线</a><a href="../chapters/appendix-glossary.html"><span>A</span>术语与 API 速查</a><a href="../chapters/appendix-sources.html"><span>B</span>来源、版本与原创性说明</a></nav>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>读前说明：这本书怎么读</a><a href="../chapters/01-two-layers.html"><span>01</span>四层栈，一条执行链</a><a href="../chapters/02-loop-from-scratch.html"><span>02</span>不用框架，先写出 Agent 循环</a><a href="../chapters/03-messages.html"><span>03</span>消息是运行时协议，不是聊天字符串</a><a href="../chapters/04-tools.html"><span>04</span>工具调用：Schema、执行与结果回填</a><a href="../chapters/05-runnables.html"><span>05</span>Runnable 与 LCEL：统一调用表面</a><a href="../chapters/06-create-agent.html"><span>06</span>create_agent 到底创建了什么</a><a href="../chapters/07-stategraph.html"><span>07</span>StateGraph：状态、节点、边与 reducer</a><a href="../chapters/08-control-flow.html"><span>08</span>路由、循环与 Command</a><a href="../chapters/09-pregel.html"><span>09</span>Pregel：图在运行时如何前进</a><a href="../chapters/10-persistence.html"><span>10</span>检查点与 Store：两种记忆边界</a><a href="../chapters/11-interrupts.html"><span>11</span>中断、重放与人工审批</a><a href="../chapters/12-streaming.html"><span>12</span>流式输出不是一种流</a><a href="../chapters/13-subgraphs.html"><span>13</span>子图与多 Agent：先隔离上下文</a><a href="../chapters/14-project.html"><span>14</span>完整案例：观测申请的证据与审批</a><a href="../chapters/15-production.html"><span>15</span>生产检查表与源码阅读路线</a><a href="../chapters/16-deep-agents.html"><span>16</span>Deep Agents：create_agent 之上的 harness</a><a href="../chapters/17-multi-agent-mcp.html"><span>17</span>多 Agent 与 MCP：协作模式与工具互联</a><a href="../chapters/appendix-glossary.html"><span>A</span>术语与 API 速查</a><a href="../chapters/appendix-sources.html"><span>B</span>来源、版本与原创性说明</a></nav>
 </dialog>
 <footer class="site-footer">基于官方源码快照独立撰写 · LangChain 1.4.2 · LangGraph 1.2.12</footer>
 <script src="../assets/reader.js"></script>

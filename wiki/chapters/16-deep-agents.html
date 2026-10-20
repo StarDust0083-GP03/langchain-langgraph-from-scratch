@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark"><meta name="description" content="LangChain 与 LangGraph 源码驱动中文电子书">
+<title>Deep Agents：create_agent 之上的 harness · LangChain × LangGraph</title>
+<link rel="stylesheet" href="../assets/reader.css">
+</head><body data-chapter="true">
+<div class="progress" aria-hidden="true"></div>
+<a class="skip" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="../index.html"><span class="brand-mark">LC×LG</span><span>LangChain × LangGraph</span></a>
+  <nav class="tools" aria-label="阅读工具">
+    <a class="tool-button" href="../search.html" aria-label="搜索">搜索</a>
+    <button class="tool-button" data-font-down aria-label="减小字号">A−</button>
+    <button class="tool-button" data-font-up aria-label="增大字号">A+</button>
+    <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
+    <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
+  </nav>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 16</div><div class="rail-title">Deep Agents：create_agent 之上的 harness</div><ol><li><a href="#create-deep-agent-默认装了什么">create_deep_agent 默认装了什么</a></li><li><a href="#从零搭一遍-看清每块补什么">从零搭一遍，看清每块补什么</a></li><li><a href="#沙箱是边界-不是可有可无">沙箱是边界，不是可有可无</a></li><li><a href="#技能用渐进披露省-token">技能用渐进披露省 token</a></li><li><a href="#子-agent-隔离的是上下文">子 Agent 隔离的是上下文</a></li><li><a href="#什么时候不需要-deep-agents">什么时候不需要 Deep Agents</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 16 章</div><h1>Deep Agents：create_agent 之上的 harness</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 10 分钟</div></header><div class="prose"><p>一份较长的观测研究可能需要整理资料文件、维护待办、调用窄专家并压缩历史。只用 <code>create_agent</code> 也能逐项实现，但许多项目会重复搭建同一组外围能力。Deep Agents 将这些能力组合为 harness，入口通常是 <code>create_deep_agent</code>。</p>
+<p>它继续利用 LangGraph 的执行机制。新增的是默认工具、策略和上下文组织方式，不是另起一套检查点或中断系统。本章涉及独立 <code>deepagents</code> 包及官方文档，具体签名应按安装版本核对，不能从两个核心仓库的提交推断全部实现。</p>
+<h2 id="create-deep-agent-默认装了什么">create_deep_agent 默认装了什么<a class="anchor" href="#create-deep-agent-默认装了什么" aria-label="链接到本节">#</a></h2>
+<p>官方描述强调 planning、subagents、filesystem 和 context management。可以按观测研究的实际工作理解这些模块：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>模块</th>
+<th>对申请研究可能有用的能力</th>
+<th>必须另行确认的边界</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>FilesystemMiddleware</code></td>
+<td>读取资料、维护研究附件和检索文件</td>
+<td>backend 可读写范围及是否允许执行</td>
+</tr>
+<tr>
+<td><code>SummarizationMiddleware</code></td>
+<td>压缩早期研究交互</td>
+<td>摘要是否保留来源和未决项</td>
+</tr>
+<tr>
+<td><code>SkillsMiddleware</code></td>
+<td>按需加载仪器研究流程</td>
+<td>技能来源、可信性与加载成本</td>
+</tr>
+<tr>
+<td><code>TodoListMiddleware</code></td>
+<td>记录待核验规则和任务进展</td>
+<td>勾选完成不等于证据正确</td>
+</tr>
+<tr>
+<td><code>SubAgentMiddleware</code></td>
+<td>委托窄范围资料核验</td>
+<td>子任务权限、预算与失败返回</td>
+</tr>
+</tbody></table></div>
+<p>默认组合会随版本变化，能力也可能受 backend 支持限制。采用前应检查实际暴露的工具列表，尤其是文件删除、命令执行和外网访问；不要因为是官方 harness 就跳过权限审查。</p>
+<h2 id="从零搭一遍-看清每块补什么">从零搭一遍，看清每块补什么<a class="anchor" href="#从零搭一遍-看清每块补什么" aria-label="链接到本节">#</a></h2>
+<p>原官方教程以数据分析讲逐步组装，这里改用“为 Halpha 申请整理研究附件”的教学设计，不声称已经运行沙箱。先用标准循环只返回资料摘要，再依据真实缺口加能力：</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>研究遇到的缺口</th>
+<th>可增加的模块</th>
+<th>接入后的最小检查</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>资料附件要保存并再次读取</td>
+<td>文件 backend 与文件中间件</td>
+<td>只访问工作目录，路径越界被拒绝</td>
+</tr>
+<tr>
+<td>多轮修订挤掉早期规则</td>
+<td>摘要中间件</td>
+<td>r1 来源、1500 秒预算和未知项仍在</td>
+</tr>
+<tr>
+<td>仪器流程只在少数任务用到</td>
+<td>技能中间件</td>
+<td>未命中时不载入全文，命中后可找到来源</td>
+</tr>
+<tr>
+<td>多个来源各需独立研究</td>
+<td>子 Agent 与待办</td>
+<td>子任务有窄输入、结束状态和预算</td>
+</tr>
+</tbody></table></div>
+<p>组装关系可用下面的伪代码表达，类名和构造参数应按实际版本选择，不把它作为可直接运行的调用：</p>
+<pre><code class="language-python">research_harness = assemble(
+    base_agent=standard_model_tool_loop,
+    filesystem=restricted_workspace_backend,
+    summarizer=source_preserving_summary,
+    skill_sources=[approved_instrument_skills],
+    delegates=[filter_rule_reviewer],
+)
+</code></pre>
+<p>只有明确需要整套默认组合时再选择 <code>create_deep_agent</code>；若只缺摘要，直接为现有 Agent 配置相应中间件更容易控制变化。每增加一项能力，先验证一个允许案例和一个拒绝或失败案例。</p>
+<h2 id="沙箱是边界-不是可有可无">沙箱是边界，不是可有可无<a class="anchor" href="#沙箱是边界-不是可有可无" aria-label="链接到本节">#</a></h2>
+<p>文件中间件提供操作入口，backend 决定操作实际发生在哪里。内存状态型、宿主文件系统和远程隔离执行环境不是同一种安全边界。<code>LangSmithSandbox</code> 是文档中的一种沙箱选项，不代表所有文件 backend 都自动具备同等隔离。</p>
+<p>为观测研究配置沙箱时，明确可挂载的资料、网络出口、命令权限和资源额度。虚拟路径不等于可靠隔离，路径校验、符号链接、宿主挂载和凭据注入都需检查。若服务允许执行命令，能力面远大于几个文件工具。</p>
+<p>研究附件也不会自动回到主机或长期保存。任务结束前应选择需要保留的文件，记录来源版本和内容指纹，再经受控接口导出。沙箱销毁与 checkpoint 保留的生命周期不同，恢复时还要处理附件已不存在的情况。</p>
+<h2 id="技能用渐进披露省-token">技能用渐进披露省 token<a class="anchor" href="#技能用渐进披露省-token" aria-label="链接到本节">#</a></h2>
+<p>技能启动阶段通常只暴露名称和描述，需要时才加载完整说明。下面是一份教学技能文本，演示领域流程的组织，不是仪器操作规程：</p>
+<pre><code class="language-markdown">---
+name: observatory-budget-review
+description: 为模拟观测申请核对曝光、读出和校准预算
+---
+读取当前申请参数，保留原始单位。
+查找已批准的开销资料及其 revision，再计算总秒数。
+报告窗口余量，并列出未包含的真实观测条件。
+不执行排班预留，不把计算通过写成人工批准。
+</code></pre>
+<p>技能降低常驻上下文成本，不会消除载入后的 token 开销，也不会自动增加工具权限。技能内容若包含脚本或外部命令，应按来源可信度审查。一个写着“可以读取全部主机目录”的说明，不应改变 backend 授权。</p>
+<h2 id="子-agent-隔离的是上下文">子 Agent 隔离的是上下文<a class="anchor" href="#子-agent-隔离的是上下文" aria-label="链接到本节">#</a></h2>
+<p>可以委托子 Agent 核验一批滤镜资料，让它内部进行查询和修正，只向主助手返回来源版本、限制与未决项。主上下文不必承载每轮失败和重试，能减少干扰。</p>
+<p>隔离上下文不等于隔离所有权限或进程。子 Agent 可能共享模型、工具 backend 或存储，取决于配置；审计系统也可能保留其完整轨迹。不能绝对声称主流程永远看不到中间细节，应区分模型收到的委托结果与开发者可访问的观测记录。</p>
+<p>需要精确控制每个恢复位置、公开输入输出和并行聚合时，显式子图更容易检验。只需把一段窄研究收敛成结果对象时，中间件委托可以减少组装，但仍要处理超时、预算和不完整结果。</p>
+<h2 id="什么时候不需要-deep-agents">什么时候不需要 Deep Agents<a class="anchor" href="#什么时候不需要-deep-agents" aria-label="链接到本节">#</a></h2>
+<p>两条教学规则加一个预算计算没有文件工作区、长历史或多专家需求，普通 <code>create_agent</code> 或确定性图就足够。本书端到端例子选择后者，是为了把审批和停止条件写清楚。</p>
+<p>若业务顺序严格，不能让 Agent 随意决定何时结算或提交，应在外层状态图固定边界。只用一块通用能力时，单独配置比整套默认 harness 更容易审计。选择依据是实际缺口和测试结果，不是名字中是否带 deep。</p>
+<h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
+<ul>
+<li><code>deepagents</code> 的 <code>create_deep_agent</code>：核对当前版本实际添加了哪些能力。</li>
+<li><code>deepagents/middleware/</code>：分别查看文件、摘要、技能、子任务与待办的合同。</li>
+<li><code>deepagents/backends/</code>：检查存储路径、执行支持与隔离责任。</li>
+<li>官方 <code>deep-agent-from-scratch</code>：用于对照逐步组合方式，不沿用其数据分析案例。</li>
+</ul>
+<p>阅读后可列一张“实际工具、backend 权限、状态字段、失败出口”的清单，再决定观测研究需要启用哪几项。没有沙箱实测时，只描述设计与文档合同，不给出隔离或性能已经验证的结论。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a href="15-production.html"><small>上一章</small><strong>生产检查表与源码阅读路线</strong></a><a class="next" href="17-multi-agent-mcp.html"><small>下一章</small><strong>多 Agent 与 MCP：协作模式与工具互联</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+  <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>读前说明：这本书怎么读</a><a href="../chapters/01-two-layers.html"><span>01</span>四层栈，一条执行链</a><a href="../chapters/02-loop-from-scratch.html"><span>02</span>不用框架，先写出 Agent 循环</a><a href="../chapters/03-messages.html"><span>03</span>消息是运行时协议，不是聊天字符串</a><a href="../chapters/04-tools.html"><span>04</span>工具调用：Schema、执行与结果回填</a><a href="../chapters/05-runnables.html"><span>05</span>Runnable 与 LCEL：统一调用表面</a><a href="../chapters/06-create-agent.html"><span>06</span>create_agent 到底创建了什么</a><a href="../chapters/07-stategraph.html"><span>07</span>StateGraph：状态、节点、边与 reducer</a><a href="../chapters/08-control-flow.html"><span>08</span>路由、循环与 Command</a><a href="../chapters/09-pregel.html"><span>09</span>Pregel：图在运行时如何前进</a><a href="../chapters/10-persistence.html"><span>10</span>检查点与 Store：两种记忆边界</a><a href="../chapters/11-interrupts.html"><span>11</span>中断、重放与人工审批</a><a href="../chapters/12-streaming.html"><span>12</span>流式输出不是一种流</a><a href="../chapters/13-subgraphs.html"><span>13</span>子图与多 Agent：先隔离上下文</a><a href="../chapters/14-project.html"><span>14</span>完整案例：观测申请的证据与审批</a><a href="../chapters/15-production.html"><span>15</span>生产检查表与源码阅读路线</a><a href="../chapters/16-deep-agents.html"><span>16</span>Deep Agents：create_agent 之上的 harness</a><a href="../chapters/17-multi-agent-mcp.html"><span>17</span>多 Agent 与 MCP：协作模式与工具互联</a><a href="../chapters/appendix-glossary.html"><span>A</span>术语与 API 速查</a><a href="../chapters/appendix-sources.html"><span>B</span>来源、版本与原创性说明</a></nav>
+</dialog>
+<footer class="site-footer">基于官方源码快照独立撰写 · LangChain 1.4.2 · LangGraph 1.2.12</footer>
+<script src="../assets/reader.js"></script>
+</body></html>

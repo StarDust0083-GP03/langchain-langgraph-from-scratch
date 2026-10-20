@@ -16,88 +16,123 @@
     <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
     <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
   </nav>
-</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 12</div><div class="rail-title">流式输出不是一种流</div><ol><li><a href="#四类常见需求">四类常见需求</a></li><li><a href="#stream-mode-是数据合同">stream mode 是数据合同</a></li><li><a href="#工具调用参数不能边到边执行">工具调用参数不能边到边执行</a></li><li><a href="#背压与取消">背压与取消</a></li><li><a href="#私有状态也可能被流出">私有状态也可能被流出</a></li><li><a href="#observability-与用户流分开">observability 与用户流分开</a></li><li><a href="#测试流式行为">测试流式行为</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 12 章</div><h1>流式输出不是一种流</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 10 分钟</div></header><div class="prose"><p>“打开 streaming”并不能说明客户端会收到什么。LangChain 与 LangGraph 可以流模型 token、节点更新、完整状态、调试事件和自定义进度。选择错误的模式，轻则页面不更新，重则把内部状态和敏感字段直接发给用户。</p>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 12</div><div class="rail-title">流式输出不是一种流</div><ol><li><a href="#四类常见需求">四类常见需求</a></li><li><a href="#stream-mode-是数据合同">stream mode 是数据合同</a></li><li><a href="#工具调用参数不能边到边执行">工具调用参数不能边到边执行</a></li><li><a href="#背压与取消">背压与取消</a></li><li><a href="#私有状态也可能被流出">私有状态也可能被流出</a></li><li><a href="#observability-与用户流分开">observability 与用户流分开</a></li><li><a href="#测试流式行为">测试流式行为</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 12 章</div><h1>流式输出不是一种流</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 12 分钟</div></header><div class="prose"><p>资料检索没有模型 token，却仍有进度；草稿开始逐字生成，也不代表预算计算或审批已完成。若页面只订阅一种模糊的“流”，很容易把展示进展和业务终态混在一起。</p>
+<p>LangGraph 可输出消息增量、状态更新、完整值或自定义进度。客户端需要选择数据合同，并在公开前做适配。流出得早只影响可见时机，不提升数据的可信度或执行资格。</p>
 <h2 id="四类常见需求">四类常见需求<a class="anchor" href="#四类常见需求" aria-label="链接到本节">#</a></h2>
 <h3 id="模型消息流">模型消息流<a class="anchor" href="#模型消息流" aria-label="链接到本节">#</a></h3>
-<p>用户想立即看到回答文字。消费端关注模型消息 chunk，逐步拼接 content 和工具调用片段。</p>
+<p>草稿节点调用支持流式的模型时，可以让用户逐步看到文字。消息 chunk 可能含工具参数片段和元数据，不能假定每项都可以当字符串追加。</p>
+<p>页面可只显示允许的文本块，工具准备状态单独呈现。最终仍需把合并结果与节点写入的草稿核对，避免增量遗漏或重复。</p>
 <h3 id="状态更新流">状态更新流<a class="anchor" href="#状态更新流" aria-label="链接到本节">#</a></h3>
-<p>调试或业务 UI 想知道哪个节点刚完成以及写了哪些字段。<code>updates</code> 关注每步增量，不传输整份累计状态。</p>
+<p><code>updates</code> 表示节点产出的局部变化，适合展示资料已找到、预算已算出等事件。比如 <code>total_s</code> 从未设置变为 1500，是一项状态变化，不是模型说出“1500”这个 token。</p>
+<p>这类事件也可能包含内部字段，应提取允许部分。不要因为增量比全量小，就假定它天然不敏感。</p>
 <h3 id="状态快照流">状态快照流<a class="anchor" href="#状态快照流" aria-label="链接到本节">#</a></h3>
-<p>需要观察每一步后的全量 state 时使用 <code>values</code>。它最直观，但数据量大，而且可能包含内部 channel。</p>
+<p><code>values</code> 提供步骤后的状态视图，适合受控调试和状态面板。累计资料和内部计划都可能出现，传输量也随状态增长。</p>
+<p>快照应替换客户端当前视图，不应被当成新增文字。若每次把全量草稿追加到聊天框，最终会看到多份重复草稿。</p>
 <h3 id="自定义进度流">自定义进度流<a class="anchor" href="#自定义进度流" aria-label="链接到本节">#</a></h3>
-<p>长工具可主动发出“已扫描 120/500 个文件”一类事件。它不应伪装成模型文本，也不必写进持久 state。</p>
+<p>资料扫描可以报告“核验了 2/5 个来源”。这种瞬时进度不必全部保存到 state，也不应伪装成模型结论。</p>
+<p>进度可以合并或限频，最终确认结果则应从状态或持久记录读取。收到 100% 只说明工具完成某项扫描，不表示审批或外部提交完成。</p>
 <h3 id="同一轮运行-可以有两种不同的时间线">同一轮运行，可以有两种不同的时间线<a class="anchor" href="#同一轮运行-可以有两种不同的时间线" aria-label="链接到本节">#</a></h3>
-<p>模型文字流告诉用户答案正在形成，节点更新流告诉应用哪一步已经完成。search 返回 notes 时，页面可以显示“找到三份资料”；draft 流出文字时，页面逐步展示草稿。若只监听模型 token，没有文本输出的检索阶段看起来会完全停住。</p>
-<p>反过来，values 快照适合受控调试，不适合直接作为公网响应。里面可能含内部计划和 artifact。外部协议应选择需要的事件字段，让“进度”“文字”“等待审批”和“错误”有不同类型。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>时间点</th>
+<th>用户展示通道</th>
+<th>业务状态通道</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>查询开始</td>
+<td>正在检查两条教学规则</td>
+<td>尚无新资料更新</td>
+</tr>
+<tr>
+<td>查询完成</td>
+<td>显示来源编号</td>
+<td>notes 写入两条记录</td>
+</tr>
+<tr>
+<td>生成中</td>
+<td>可选的草稿文字增量</td>
+<td>当前 draft 未必已完整写入</td>
+</tr>
+<tr>
+<td>审批暂停</td>
+<td>展示 v1 预览和动作</td>
+<td>待恢复任务为 review</td>
+</tr>
+<tr>
+<td>本地发布</td>
+<td>展示模拟回执</td>
+<td>状态为 <code>published_locally</code></td>
+</tr>
+</tbody></table></div>
+<p>这张表拆开体验与确认时点。具体事件先后仍受实现和配置影响，不是对数据库提交顺序的统一保证。客户端应按事件类型处理，不能从任意文字推断完成。</p>
 <h2 id="stream-mode-是数据合同">stream mode 是数据合同<a class="anchor" href="#stream-mode-是数据合同" aria-label="链接到本节">#</a></h2>
-<p>典型调用：</p>
-<pre><code class="language-python">for chunk in graph.stream(inputs, stream_mode=&quot;updates&quot;):
-    handle(chunk)
+<p>下面为已构造 graph 后的调用片段：</p>
+<pre><code class="language-python">for update in graph.stream(
+    {&quot;question&quot;: &quot;研究 Halpha 申请&quot;, &quot;notes&quot;: []},
+    config,
+    stream_mode=&quot;updates&quot;,
+):
+    print(update)
 </code></pre>
-<p>异步服务应使用异步消费，避免阻塞事件循环。当前源码还提供更丰富的 event streaming 版本和 transformer 管线，但公开给客户端前应转换成自己的稳定事件协议。</p>
-<p>推荐的外部事件形状：</p>
-<pre><code class="language-json">{
-  &quot;type&quot;: &quot;message.delta&quot;,
-  &quot;run_id&quot;: &quot;...&quot;,
-  &quot;sequence&quot;: 17,
-  &quot;data&quot;: {&quot;text&quot;: &quot;Lang&quot;}
-}
-</code></pre>
-<p>事件应有类型、顺序号和 run 标识。客户端重连时才知道是否重复、丢失或属于另一轮执行。</p>
+<p>它适合本地观察节点增量。异步服务使用异步消费，避免在事件循环里同步等待。另一些较新的官方文档提供 <code>stream_events(..., version=&quot;v3&quot;)</code> 统一事件表面，需先确认已安装版本的签名，不把它和其他版本的事件对象混用。</p>
+<p>对外可以定义自己的协议，比如 <code>{&quot;type&quot;:&quot;proposal.progress&quot;,&quot;run_id&quot;:&quot;r17&quot;,&quot;sequence&quot;:4,&quot;data&quot;:{&quot;completed&quot;:2}}</code>。run 身份隔离执行，递增序号辅助去重，data 只包含允许字段。框架升级改变内部事件时，适配层继续维持客户端合同。</p>
 <h2 id="工具调用参数不能边到边执行">工具调用参数不能边到边执行<a class="anchor" href="#工具调用参数不能边到边执行" aria-label="链接到本节">#</a></h2>
-<p>模型可能这样流出参数：</p>
-<pre><code class="language-text">&#39;{&quot;query&quot;&#39;
-&#39;: &quot;Lang&#39;
-&#39;Graph&quot;}&#39;
-</code></pre>
-<p>前两个片段都不是完整 JSON。框架会合并消息 chunk，应用若直接转发 provider 原始 delta，则必须等工具调用完成事件后再执行。</p>
-<p>UI 可以提前展示“模型准备调用 search”，但不能把未完成参数当作授权后的动作。</p>
+<p>预算参数 <code>{&quot;frames&quot;:6,&quot;exposure_s&quot;:180}</code> 可能分几次抵达。工具名出现时只能显示准备调用，参数完整后还要进行范围和权限校验，才可以执行。</p>
+<p>即使某个前缀暂时是合法 JSON，也不能认为它代表最终请求。完成信号、调用 ID、完整参数和授权共同决定可执行性。自定义 provider 转发器如果绕过框架合并逻辑，需要自行维护这一合同并补测试。</p>
 <h2 id="背压与取消">背压与取消<a class="anchor" href="#背压与取消" aria-label="链接到本节">#</a></h2>
-<p>生产流不是无限 <code>yield</code>。需要考虑：</p>
-<ul>
-<li>客户端读得比模型产生慢时，缓冲区上限是多少；</li>
-<li>用户关闭页面后，图是否继续；</li>
-<li>断线后结果保留在哪里；</li>
-<li>同一 thread 是否允许两个并发 run；</li>
-<li>tool 仍执行时，取消是软取消还是强终止。</li>
-</ul>
-<p>对有副作用的工作流，客户端断线不应等价于事务回滚。可让 run 在后台继续，并通过持久状态重新订阅。</p>
+<p>生产者产生事件比浏览器读取更快时，服务端队列会积累。应为队列设上限，对可替代进度合并，对不可丢失文字定义断开与重放策略，避免无限内存增长。</p>
+<p>取消也分阶段。客户端关闭页面，后台 run 可以继续保存结果；如果希望停止，需要向模型与工具传播取消信号。已经发生的真实资源预留不能靠取消本地迭代器自动撤销，必须查询外部状态或走业务取消流程。</p>
 <h3 id="消费慢与停止运行是两个问题">消费慢与停止运行是两个问题<a class="anchor" href="#消费慢与停止运行是两个问题" aria-label="链接到本节">#</a></h3>
-<p>客户端读取变慢，服务可能积累事件；如果缓存无限增长，一次长生成会消耗大量内存。可对展示进度合并、限制队列，并定义断开处理。文字增量不能随意丢片段，否则用户得到残缺答案。</p>
-<p>客户端关闭页面不保证模型 provider 和工具操作已经取消。取消信号要沿任务传播，已发生的外部写入不能撤回。需要明确哪些阶段可停止，哪些必须先确认业务结果，再把最终状态保存供重连查询。</p>
+<p>慢消费者只是来不及接收，不代表用户放弃申请。可减少进度频率，但不能随意丢中间文字后继续追加，否则草稿残缺。必要时让客户端重新读取最新完整草稿，再从新的事件位置继续。</p>
+<p>停止运行则应明确：哪些节点可立即中止，哪些写操作必须确认结果，暂停审批是否保持。记录 <code>cancel_requested</code> 和最终业务状态比仅记录连接断开更有用，断线本身没有事务含义。</p>
 <h2 id="私有状态也可能被流出">私有状态也可能被流出<a class="anchor" href="#私有状态也可能被流出" aria-label="链接到本节">#</a></h2>
-<p>Input/Output schema 约束 invoke 的接口，不自动过滤所有 stream mode。官方 Graph API 文档指出，<code>values</code> 默认可包含内部或私有 channel。将原始 state stream 直接桥接到浏览器之前，必须做字段白名单。</p>
-<p>同样，trace 和 debug events 可能包含 system prompt、工具参数、检索原文和错误栈。开发方便不代表适合终端用户。</p>
+<p>输入和输出 schema 限定常规接口，不必然筛选所有流模式。<code>values</code> 可能包含内部 channel，调试事件还可能携带工具参数、system prompt 和资料内容。</p>
+<p>用户出口应采用白名单映射，而非仅删除几个已知秘密字段。新增内部字段默认不公开，测试中放入醒目的敏感哨兵值，断言所有用户事件都不包含它。日志、trace 和错误响应也要单独检查，因为它们是不同出口。</p>
 <h2 id="observability-与用户流分开">observability 与用户流分开<a class="anchor" href="#observability-与用户流分开" aria-label="链接到本节">#</a></h2>
-<p>用户流优化稳定、简洁和可恢复；观测流优化细节和诊断。两者可以来自同一次 run，但不应共用一个未经筛选的 payload。</p>
-<pre><code class="language-text">                       ┌─ 用户事件适配器 -&gt; SSE/WebSocket
-Graph event stream ────┤
-                       └─ 观测适配器 -&gt; trace / metrics / logs
-</code></pre>
-<p>这样升级框架事件格式时，只修改适配器，前端合同不必跟着内部 API 变化。</p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>消费者</th>
+<th>应得到的信息</th>
+<th>通常不应直接得到的信息</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>申请页面</td>
+<td>安全进度、草稿、待审版本、本地回执</td>
+<td>内部计划与堆栈</td>
+</tr>
+<tr>
+<td>运行诊断</td>
+<td>节点时间、工具身份、失败类型、尝试数</td>
+<td>无关原始敏感资料</td>
+</tr>
+<tr>
+<td>审计记录</td>
+<td>批准主体、版本、业务键和状态</td>
+<td>不必要的全部模型上下文</td>
+</tr>
+</tbody></table></div>
+<p>可以从同一次运行派生多个适配出口，但分别做脱敏和授权。诊断追求细节，页面追求稳定，审计追求可解释的业务事实，三者不需要共享一个未经筛选的 payload。</p>
 <h2 id="测试流式行为">测试流式行为<a class="anchor" href="#测试流式行为" aria-label="链接到本节">#</a></h2>
-<p>不要只断言最终文本。还要检查：</p>
-<ul>
-<li>sequence 单调增加；</li>
-<li>chunk 合并后等于最终消息；</li>
-<li>tool call 完成前没有执行；</li>
-<li>interrupt 事件能结束本轮消费；</li>
-<li>私有字段没有出现在用户通道；</li>
-<li>慢消费者和断线不会无限占内存。</li>
-</ul>
+<p>除最终草稿外，应断言增量合并等于终态、序号递增、工具未在调用完成前执行、暂停能结束本轮消费、私有哨兵值未泄漏。再模拟慢读取和中途断开，确认队列有界且最终状态可查询。</p>
+<p>这些测试不全需要真实模型。可用固定 chunk 序列覆盖适配逻辑，再用少量目标 provider 合同测试核对原生事件形状。不能把确定性 LangGraph 示例的成功当成网络 streaming 链路已经验证。</p>
 <h3 id="重连时如何避免把同一段文字显示两次">重连时如何避免把同一段文字显示两次<a class="anchor" href="#重连时如何避免把同一段文字显示两次" aria-label="链接到本节">#</a></h3>
-<p>外部事件带 run_id 和递增序号，客户端可以识别重复；服务端还需定义重放窗口或查询最终状态的入口。展示已完成草稿和继续 token 流不是同一种恢复，不能让 UI 把全量快照再次追加成增量。</p>
-<p>测试应故意在工具执行、模型输出和审批等待时分别断开，再确认没有泄漏私有字段、重复执行副作用或串到其他 run。用户流强调稳定合同，调试 trace 可以更丰富，但两者访问权限不同。</p>
+<p>客户端按 <code>run_id</code> 和 sequence 识别重复事件，服务端定义可重放窗口；窗口失效时返回完整快照与新的游标。快照替换已有草稿，增量才追加，二者在协议中必须有不同类型。</p>
+<p>还需避免把旧 run 的尾部增量拼到新一轮草稿。重连后先确认执行身份和草稿 revision，再决定续接或重载。只有内存广播而没有重放记录时，应明确只能查询最终状态，不能假称支持断点续流。</p>
 <h2 id="源码入口">源码入口<a class="anchor" href="#源码入口" aria-label="链接到本节">#</a></h2>
 <ul>
-<li><code>langgraph/stream/</code></li>
-<li><code>langgraph/pregel/main.py</code> 中的 stream 接口</li>
-<li><code>langchain_core/language_models/chat_model_stream.py</code></li>
-<li><code>langchain_core/runnables/schema.py</code></li>
+<li><code>langgraph/stream/</code>：查看当前快照的事件类型和转换路径。</li>
+<li><code>langgraph/pregel/main.py</code>：核对流式方法、mode 和版本参数。</li>
+<li><code>langchain_core/language_models/chat_model_stream.py</code>：追模型 chunk 的标准化。</li>
+<li><code>langchain_core/runnables/schema.py</code>：对照事件结构，避免与公网协议耦合。</li>
 </ul>
+<p>排查时把“产生了什么”“适配后剩什么”“客户端如何消费”分别记录，才能定位缓冲、重复或泄露发生在哪一段。</p>
 </div><nav class="chapter-nav" aria-label="章节导航"><a href="11-interrupts.html"><small>上一章</small><strong>中断、重放与人工审批</strong></a><a class="next" href="13-subgraphs.html"><small>下一章</small><strong>子图与多 Agent：先隔离上下文</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
   <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
-  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>读前说明：这本书怎么读</a><a href="../chapters/01-two-layers.html"><span>01</span>两层框架，一条执行链</a><a href="../chapters/02-loop-from-scratch.html"><span>02</span>不用框架，先写出 Agent 循环</a><a href="../chapters/03-messages.html"><span>03</span>消息是运行时协议，不是聊天字符串</a><a href="../chapters/04-tools.html"><span>04</span>工具调用：Schema、执行与结果回填</a><a href="../chapters/05-runnables.html"><span>05</span>Runnable 与 LCEL：统一调用表面</a><a href="../chapters/06-create-agent.html"><span>06</span>create_agent 到底创建了什么</a><a href="../chapters/07-stategraph.html"><span>07</span>StateGraph：状态、节点、边与 reducer</a><a href="../chapters/08-control-flow.html"><span>08</span>路由、循环与 Command</a><a href="../chapters/09-pregel.html"><span>09</span>Pregel：图在运行时如何前进</a><a href="../chapters/10-persistence.html"><span>10</span>检查点与 Store：两种记忆边界</a><a href="../chapters/11-interrupts.html"><span>11</span>中断、重放与人工审批</a><a href="../chapters/12-streaming.html"><span>12</span>流式输出不是一种流</a><a href="../chapters/13-subgraphs.html"><span>13</span>子图与多 Agent：先隔离上下文</a><a href="../chapters/14-project.html"><span>14</span>端到端：本地研究助手</a><a href="../chapters/15-production.html"><span>15</span>生产检查表与源码阅读路线</a><a href="../chapters/appendix-glossary.html"><span>A</span>术语与 API 速查</a><a href="../chapters/appendix-sources.html"><span>B</span>来源、版本与原创性说明</a></nav>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>读前说明：这本书怎么读</a><a href="../chapters/01-two-layers.html"><span>01</span>四层栈，一条执行链</a><a href="../chapters/02-loop-from-scratch.html"><span>02</span>不用框架，先写出 Agent 循环</a><a href="../chapters/03-messages.html"><span>03</span>消息是运行时协议，不是聊天字符串</a><a href="../chapters/04-tools.html"><span>04</span>工具调用：Schema、执行与结果回填</a><a href="../chapters/05-runnables.html"><span>05</span>Runnable 与 LCEL：统一调用表面</a><a href="../chapters/06-create-agent.html"><span>06</span>create_agent 到底创建了什么</a><a href="../chapters/07-stategraph.html"><span>07</span>StateGraph：状态、节点、边与 reducer</a><a href="../chapters/08-control-flow.html"><span>08</span>路由、循环与 Command</a><a href="../chapters/09-pregel.html"><span>09</span>Pregel：图在运行时如何前进</a><a href="../chapters/10-persistence.html"><span>10</span>检查点与 Store：两种记忆边界</a><a href="../chapters/11-interrupts.html"><span>11</span>中断、重放与人工审批</a><a href="../chapters/12-streaming.html"><span>12</span>流式输出不是一种流</a><a href="../chapters/13-subgraphs.html"><span>13</span>子图与多 Agent：先隔离上下文</a><a href="../chapters/14-project.html"><span>14</span>完整案例：观测申请的证据与审批</a><a href="../chapters/15-production.html"><span>15</span>生产检查表与源码阅读路线</a><a href="../chapters/16-deep-agents.html"><span>16</span>Deep Agents：create_agent 之上的 harness</a><a href="../chapters/17-multi-agent-mcp.html"><span>17</span>多 Agent 与 MCP：协作模式与工具互联</a><a href="../chapters/appendix-glossary.html"><span>A</span>术语与 API 速查</a><a href="../chapters/appendix-sources.html"><span>B</span>来源、版本与原创性说明</a></nav>
 </dialog>
 <footer class="site-footer">基于官方源码快照独立撰写 · LangChain 1.4.2 · LangGraph 1.2.12</footer>
 <script src="../assets/reader.js"></script>

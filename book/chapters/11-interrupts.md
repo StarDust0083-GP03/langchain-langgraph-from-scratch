@@ -1,149 +1,122 @@
 # 中断、重放与人工审批
 
-`interrupt()` 把“等待外部决定”变成图运行时的一等状态。它不是阻塞一个 Python 线程直到用户点击按钮，而是保存 checkpoint、返回暂停信息，让当前进程可以释放资源。之后用同一个 thread 恢复。
+值班员明天才有空审阅申请，服务不应为此一直保留一个 HTTP 请求和 Python 线程。`interrupt()` 让图交出待决定的信息，保存可恢复状态，本轮调用返回；之后另一轮调用带着决定找到同一个流程。
+
+这种暂停适合等待，不等于已经批准，也不保证外部条件保持不变。恢复时要检查草稿版本、身份和资源状态，才能把人的决定用到正确对象上。
 
 ## 基本流程
 
-节点内发起中断：
+以下为已配置持久化的状态图中的节点片段：
 
 ```python
-from langgraph.types import interrupt
+from langgraph.types import Command, interrupt
 
-def approval(state: State) -> dict:
+def review(state):
     decision = interrupt({
-        "kind": "approve_publish",
-        "preview": state["draft"],
+        "kind": "observatory.review",
+        "proposal_id": state["proposal_id"],
+        "revision": state["revision"],
+        "draft": state["draft"],
     })
-    return {"approved": bool(decision["approved"])}
+    if type(decision.get("approved")) is not bool:
+        raise ValueError("approval must be boolean")
+    if decision.get("revision") != state["revision"]:
+        raise ValueError("stale draft decision")
+    return {"approved": decision["approved"]}
 ```
 
-首次调用到达这里时，payload 暴露给调用方，图暂停。应用把 payload 渲染成审批 UI。用户提交后：
-
-```python
-from langgraph.types import Command
-
-graph.invoke(
-    Command(resume={"approved": True}),
-    {"configurable": {"thread_id": "thread-42"}},
-)
-```
-
-恢复值成为 `interrupt()` 的返回值，节点继续产生更新。
+首次到达中断时，返回结果中的暂停信息交给应用展示。收到审核决定后，用原配置调用 `graph.invoke(Command(resume={"approved": True, "revision": 1}), config)`。这份值成为重放过程中 `interrupt()` 的返回值。完整示例还会检查决定是字典、revision 为整数，以及拒绝后的调度。
 
 <figure class="concept-diagram" tabindex="0">
-<svg viewBox="0 0 760 250" role="img" aria-labelledby="approval-title approval-desc" xmlns="http://www.w3.org/2000/svg">
-<title id="approval-title">审批中断和恢复的执行边界</title><desc id="approval-desc">首次运行在审批节点中断并保存检查点；收到同一 thread ID 的恢复命令后，审批节点从头执行，中断返回审批值，再进入扣款节点。扣款使用稳定幂等键。</desc>
-<g fill="none" stroke="currentColor" stroke-opacity=".45" stroke-width="2"><path d="M148 90h42m153 0h42m153 0h42"/><path d="m182 83 8 7-8 7m187-14 8 7-8 7m187-14 8 7-8 7"/></g>
-<g fill="none" stroke="currentColor" stroke-width="2"><rect x="12" y="46" width="136" height="90" rx="8"/><rect x="190" y="46" width="153" height="90" rx="8"/><rect x="385" y="46" width="153" height="90" rx="8"/><rect x="580" y="46" width="168" height="90" rx="8"/></g>
-<g fill="currentColor" font-size="16" font-weight="600" text-anchor="middle"><text x="80" y="80">首次调用</text><text x="266" y="80">interrupt()</text><text x="461" y="80">Command(resume)</text><text x="664" y="80">后续副作用</text></g>
-<g fill="currentColor" fill-opacity=".7" font-size="13" text-anchor="middle"><text x="80" y="109">进入审批节点</text><text x="266" y="109">保存 checkpoint</text><text x="461" y="109">同一 thread_id</text><text x="664" y="109">稳定幂等键</text></g>
-<path d="M463 145v28H266v-28" fill="none" stroke="currentColor" stroke-opacity=".65" stroke-width="2"/><path d="m259 156 7-11 7 11" fill="none" stroke="currentColor" stroke-width="2"/><text x="365" y="207" fill="currentColor" font-size="14" text-anchor="middle">恢复会重放审批节点；中断前的代码也可能再次执行</text>
-</svg><figcaption>图：checkpoint 恢复图状态，不会替外部服务撤销或去重。</figcaption>
+<svg viewBox="0 0 820 330" role="img" aria-labelledby="approval-title approval-desc" xmlns="http://www.w3.org/2000/svg">
+<title id="approval-title">观测申请 v1 与 v2 的审批账目</title>
+<desc id="approval-desc">图以三个参与方的泳道记录两次调用。第一次图保存 v1 后向审阅端交出预览并结束请求；第二次审阅端返回 v1 的拒绝，图重入审批节点后生成 v2，再等待决定。外部排班尚无任何提交。</desc>
+<g fill="none" stroke="currentColor" stroke-opacity=".3"><path d="M150 54H800M150 125H800M150 205H800M150 285H800M320 35V305M555 35V305"/></g>
+<g fill="currentColor" font-size="15" text-anchor="middle"><text x="235" y="25">审阅端</text><text x="438" y="25">图与检查点</text><text x="682" y="25">外部排班</text></g>
+<g fill="currentColor" font-size="14"><text x="10" y="87">调用 A</text><text x="10" y="167">等待期间</text><text x="10" y="248">调用 B</text><text x="350" y="80">保存资料与草稿 v1</text><text x="170" y="112">收到 v1 预览</text><text x="350" y="160">待恢复：review</text><text x="170" y="192">人决定拒绝 v1</text><text x="350" y="240">重入节点，核对版本</text><text x="350" y="272">修订为 v2，再暂停</text><text x="594" y="165">未预留窗口</text><text x="594" y="246">仍未提交</text></g>
+<g fill="none" stroke="currentColor" stroke-width="2"><path d="M425 92H225m8-5-8 5 8 5M230 218H420m-8-5 8 5-8 5"/><circle cx="681" cy="105" r="13"/><path d="m672 96 18 18M670 294h25"/></g>
+<text x="414" y="322" fill="currentColor" font-size="13" text-anchor="middle">拒绝只推进当前申请的修订，不撤销或伪造任何外部资源状态</text>
+</svg>
+<figcaption>审批期间保存的是草稿与待恢复任务。图中外部排班始终未被写入，v1 的拒绝不能当成 v2 的批准。</figcaption>
 </figure>
 
 ## 最关键的规则：节点可能从头重放
 
-恢复并不等于 Python 从暂停行原地继续。运行时根据 checkpoint 重放节点，`interrupt()` 之前的代码可能再次执行。
+恢复不是原调用栈在某一行醒来。运行时重新进入节点，利用保存信息和恢复值推进，所以 `interrupt()` 之前的普通代码可能再次执行。
 
-危险写法：
+把“预留真实时段”写在中断之前会有风险。首次调用已经预留，恢复再次进入又预留一次。可以把研究和预览准备留在可重放步骤，将外部提交放在审批通过后的单独节点，并在领域服务中使用稳定业务键。
 
-```python
-def approve_and_send(state):
-    charge_credit_card()       # 可能重复
-    ok = interrupt("approve")
-    if ok:
-        send_receipt()
-```
-
-安全方向有两种：
-
-1. 把不可重复副作用移到中断之后。
-2. 使用稳定幂等键，让中断前操作重复调用也只生效一次。
+下面是阶段划分的伪代码，不代表框架自带排班 API：
 
 ```python
-def approve(state):
-    return {"decision": interrupt({"amount": state["amount"]})}
+def approval_node(state):
+    return {"decision": interrupt(preview_of(state))}
 
-def charge(state):
-    charge_credit_card(idempotency_key=state["order_id"])
-    return {"charged": True}
+def reservation_node(state):
+    # 应用服务再次检查批准版本，并按业务键返回已有或新建的回执。
+    receipt = scheduling_service.reserve_once(state["proposal_id"], state["revision"])
+    return {"reservation_id": receipt.id}
 ```
 
-审批和扣款成为不同节点，恢复边界一眼可见。
+即使移到中断之后，提交节点也可能因故障重试。阶段拆分让风险可见，幂等才处理外部重复生效。
 
 ### 两次请求之间没有一条永远挂起的调用栈
 
-首次执行生成审批问题，运行时把暂停信息交回应用；应用可以结束 HTTP 请求。第二天收到决定，是一次新的调用，依靠同一个 thread 与保存状态找到原流程。恢复节点重新进入，interrupt 使用恢复值继续产生结果。
+调用 A 到达待审点后可以结束，应用只需把申请地址和审批预览关联起来。第二天调用 B 使用同一 thread 和恢复值继续流程，不要求同一个 Web 进程存活。
 
-这解释了中断之前的代码为何要安全重放：在那里重新生成同一预览通常可接受，重新扣款则不可接受。把草稿生成、审批与发布拆成独立边界，可以更清楚地检查每一步是否可能重复。
+因此审批前生成随机编号、读当前时间或刷新草稿都要审慎。重放时这些值若变化，UI 上批准的内容可能与实际处理不一致。先把稳定预览写入 state，再在审批节点只读并中断，通常更容易固定版本关系。
 
 ## payload 是 UI 合同
 
-不要只传一句字符串。稳定 payload 可包含：
+审批 payload 应让客户端知道展示什么和允许做什么。申请编号、修订号、安全预览、动作集合和必要警告比一句“同意吗”更有用。需要编辑的字段还应有受限 schema，不应让客户端回传整份内部 state。
 
-- `kind`：UI 选择哪个组件；
-- `title` 与安全摘要；
-- 可编辑字段及 schema；
-- 风险说明；
-- 业务对象 ID；
-- 允许动作，例如 approve、reject、edit。
+payload 会经过序列化、保存和网络边界，不能带连接对象、秘密或其他申请记录。UI 显示的草稿与服务端批准校验应使用同一 revision 或内容指纹，避免预览和提交对象错位。
 
-不要把秘密或完整内部 state 暴露给客户端。payload 会经过持久化和网络边界，应按外部 API 对待。
+对 `approved` 应严格检查布尔类型，`bool("false")` 在 Python 中为真。示例专门测试这种输入，防止看似拒绝的文本值成为批准。客户端校验不能代替服务端校验。
 
 ## 多个并行中断
 
-同一 super-step 的并行节点可能同时暂停。客户端不能假设只有一个 interrupt，应按 ID 收集并逐个或批量恢复。恢复数据要明确映射到对应中断，尤其在多个审批问题文本相同时。
+规则审核和时间审核可以同时暂停。调用方需识别每个 interrupt 的 ID 和业务对象，收集对应决定；不能只取第一个暂停信息就认为整份申请只有一项待处理。
 
-UI 还要处理过期决策：审批期间业务对象可能已经被取消或修改。恢复后的副作用节点应重新验证当前业务状态，而不是盲信一天前的预览。
+多个恢复值可按中断身份映射，具体输入形状应核对目标版本。相同问题文本不能作唯一键，两个节点都问“通过吗”时仍是不同任务。恢复后还要核对审批是否过期，不能让延迟到达的决定覆盖更新后的申请。
 
 ### 审批的是哪个版本，也应进入合同
 
-同意发布草稿 v1 后，业务系统若已生成 v2，不能将同意自动套给 v2。payload 可以引用流程和草稿版本，恢复端校验当前对象仍匹配，否则请求重新审阅。图保存了旧预览，不代表外部世界在等待期间没有变化。
+v1 被拒绝后产生 v2，旧页面上的“批准 v1”不应自动批准新草稿。服务端检查业务版本，图节点也检查当前 state revision，不匹配时拒绝使用决定。
 
-并行中断还应按各自 ID 匹配决定，不能用审批问题文字作唯一键。两个专家都问“通过吗”，却可能审核不同材料；错误匹配会让图正确恢复到错误业务结论。
+版本校验还需覆盖外部变化。即使草稿内容没变，窗口可能已被取消，提交服务仍要确认当前可用性。保存了 v1 预览仅证明当时的草稿，没有冻结排班系统或授权。
 
 ## 静态断点与动态中断
 
-`interrupt_before=["tools"]` 之类的编译配置可以在节点边界统一暂停，适合调试或对全部工具调用做粗粒度门控。节点内 `interrupt()` 能携带业务 payload，并根据状态决定是否暂停。
+`interrupt_before=["tools"]` 在节点边界暂停，适合调试或整体门控。继续这种静态断点通常用同一配置传 `None`。它并没有在节点内部留下一个等待返回业务值的 `interrupt()` 调用。
 
-前者简单但信息有限，后者表达力更强。敏感操作通常需要节点内或工具中间件提供详细审批合同。
+动态中断有业务 payload，恢复时传 `Command(resume=...)`。需要解释批准对象、动作和版本时，动态方式更合适。两种暂停都依赖保存机制，但客户端恢复协议不能混用。
 
 ## 故障恢复与中断的共同基础
 
-两者都依赖 checkpoint：
+故障和人工等待都需要找回既有状态与后续工作。前者通常没有合法业务决定，只能按保存结果重试；后者则还需一个外部恢复值。保存地址、图版本和节点边界决定能否继续。
 
-```text
-完成 super-step
-      │
-      ▼
-写 checkpoint ──> 正常继续
-      │
-      ├─> 进程故障后用 thread_id 恢复
-      └─> interrupt 返回，等待 Command(resume)
-```
-
-这也意味着没有持久 checkpointer，就没有跨进程、跨时间的可靠人工审批。内存 saver 只适合当前开发进程。
+使用内存 saver，进程结束后待审任务随之消失。生产中跨日审批必须选择持久实现并测试新进程恢复，同时考虑等待期间图升级的兼容性。即使 checkpoint 完整，已失效的工具权限也需要重新验证。
 
 ## 一个审批测试应验证什么
 
-1. 首次 invoke 确实暂停，不执行后续副作用。
-2. checkpoint 的 `next` 指向待恢复节点。
-3. approve 走成功分支，reject 走取消或修订分支。
-4. 重复 resume 不产生重复副作用。
-5. 进程重启后仍能用 thread ID 恢复。
-6. 未授权用户不能提交别人的审批结果。
+可以从可观察状态编写断言：首次暂停有草稿但无回执，`next` 指向 review；拒绝后版本增加且仍无回执；批准当前版本才进入本地发布；第三次拒绝结束为额度耗尽；错误布尔值和过期版本不被接受。
 
-本书 `examples/research_assistant.py` 覆盖前 3 项。生产系统还需要真实数据库和授权层测试。
+`examples/test_examples.py` 覆盖这些进程内路径以及预算不足、资料缺失的直接结束。它不连接真实数据库或排班服务，不能据此宣称完成了跨进程恢复、并发审批或外部副作用防重测试。
 
-### 怎样验证拒绝分支没有偷偷执行发布
+<a id="怎样验证拒绝分支没有偷偷执行发布"></a>
 
-测试先运行到暂停，断言发布副作用计数为零；提交拒绝后，检查修订状态与新审批，计数仍为零；批准正确版本后才允许一次发布。再重复发送相同决定，确认业务幂等层没有重复产出。
+### 拒绝审批后如何确认没有生成提交回执
 
-这类测试不需要高能力模型，确定性节点更容易暴露恢复错误。进程重启与未授权恢复则必须用真实持久化和服务身份层补测，内存示例只能证明当前进程中的控制流。
+只检查草稿变了不够，还要断言回执为空、发布计数为零，以及审核意见进入了正确版本。若领域服务被替换为可计数测试桩，拒绝前后计数都应不变，批准后才允许一次逻辑提交。
+
+真实服务还应注入“写入成功但响应丢失”，再用同一业务键查询与重试。重复 HTTP 决定在应用层去重，图状态与外部记录共同核对，才能验证没有重复预留。离线例子只有稳定本地回执，不冒充这项保证。
 
 ## 源码入口
 
-- `langgraph/types.py`：`interrupt()`、`Command`、`Interrupt`。
-- `langgraph/_internal/_scratchpad.py`：中断重放所需的运行时记录。
-- `langgraph/pregel/_loop.py`：暂停与恢复循环。
-- `langgraph/checkpoint/`：持久化基础。
+- `langgraph/types.py`：核对中断值、恢复命令和中断身份。
+- `langgraph/_internal/_scratchpad.py`：追踪重放时如何找到已有恢复信息。
+- `langgraph/pregel/_loop.py`：检查本轮暂停和下一轮恢复的推进。
+- `langgraph/checkpoint/`：查看保存实现承担的持久性边界。
+
+读中断实现时，要同时查看调用它的节点和 saver 配置；只看一行 `interrupt()` 无法判断副作用是否可重放。

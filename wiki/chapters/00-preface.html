@@ -16,78 +16,57 @@
     <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
     <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
   </nav>
-</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 00</div><div class="rail-title">读前说明：这本书怎么读</div><ol><li><a href="#本书回答什么">本书回答什么</a></li><li><a href="#跟着一份状态读-而不只记住名字">跟着一份状态读，而不只记住名字</a></li><li><a href="#源码快照">源码快照</a></li><li><a href="#阅读路线">阅读路线</a></li><li><a href="#示例约定">示例约定</a></li><li><a href="#如何看源码引用">如何看源码引用</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 00 章</div><h1>读前说明：这本书怎么读</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 8 分钟</div></header><div class="prose"><p>LangChain 和 LangGraph 最容易学错的地方，不是 API 太多，而是入口太多。搜索结果里同时存在 0.x 的 Chain 教程、1.x 的 Agent 工厂、LangGraph 的 Graph API、Functional API，以及依赖不同模型供应商的样例。每一段代码单独看都像是正确答案，拼在一起却常常跑不起来。</p>
-<p>这本书换一种路线：先固定版本和源码，再建立执行模型，最后才谈应用模式。</p>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 00</div><div class="rail-title">读前说明：这本书怎么读</div><ol><li><a href="#本书回答什么">本书回答什么</a></li><li><a href="#跟着一份状态读-而不只记住名字">跟着一份状态读，而不只记住名字</a></li><li><a href="#源码快照">源码快照</a></li><li><a href="#阅读路线">阅读路线</a></li><li><a href="#示例约定">示例约定</a></li><li><a href="#如何看源码引用">如何看源码引用</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 00 章</div><h1>读前说明：这本书怎么读</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 12 分钟</div></header><div class="prose"><p>一份观测申请已经生成草稿，值班员还没有批准，服务却重启了。重新打开页面时，系统应找回草稿、认出待审版本，继续等待决定。它不能重新占用望远镜时段，也不能把另一份申请的批复套过来。理解 LangChain 与 LangGraph，可以从这件具体的事开始。</p>
+<p>书中的主线是天文台观测申请与资料研究助手。我们会把申请拆成消息、工具观察、状态更新和可恢复任务，再观察这些对象经过框架的哪些接口。读者需要基本 Python 知识，不需要天文专业背景；所有观测参数都用于教学，不构成真实仪器操作建议。</p>
 <h2 id="本书回答什么">本书回答什么<a class="anchor" href="#本书回答什么" aria-label="链接到本节">#</a></h2>
-<p>读完后，你应该能独立回答五个问题：</p>
-<ol>
-<li>LangChain 和 LangGraph 各自负责哪一层？</li>
-<li>一次工具调用在消息、模型、工具和状态之间如何流动？</li>
-<li><code>StateGraph</code> 为什么需要 reducer，<code>compile()</code> 又编译了什么？</li>
-<li>checkpoint、store、interrupt 和 stream 的边界在哪里？</li>
-<li>出现重复副作用、状态膨胀、恢复异常时，应从哪段源码开始查？</li>
-</ol>
-<p>本书不会罗列每个 provider 的参数。模型名称和价格变得很快，消息协议、状态转换和持久化边界更值得掌握。</p>
+<p>本书希望让读者能解释一段运行轨迹，而不只是复现一次输出。比如模型请求估算时长时，谁校验帧数，谁计算预算，结果靠什么身份回到模型；审批暂停后，哪些数据已经保存，恢复时哪些函数会再执行；两个检索节点同时补材料，为什么不能争写一个普通列表字段。</p>
+<p>我们也会区分几个容易混淆的责任：LangChain 提供组件协议与常见 Agent 组合，LangGraph 表达可恢复的状态转换，Deep Agents 预装通用工作能力，LangSmith 提供观测等平台能力。框架能保存执行位置，申请是否有足够证据、用户是否有权提交，仍需业务代码判断。</p>
+<p>源码阅读集中在这些问题上。你会看到消息合并、工具执行、图编译、步骤调度以及持久化的入口，不会在每个供应商的参数之间来回切换。模型选择影响生成质量，但不能替代授权、预算和恢复设计。</p>
 <h2 id="跟着一份状态读-而不只记住名字">跟着一份状态读，而不只记住名字<a class="anchor" href="#跟着一份状态读-而不只记住名字" aria-label="链接到本节">#</a></h2>
-<p>读正文时，可以始终想象同一个研究任务：用户提问，模型要资料，工具返回笔记，图形成草稿，人决定是否发布。遇到新概念，先看它改变了这条路径的哪一部分，再读类型与源码入口。</p>
-<p>消息章节追请求与结果的身份；状态章节追哪个字段何时可见；运行时章节追任务如何推进；持久化和中断章节追两次调用之间靠什么连接。后面的生产边界并非额外规则，而是前面机制在超时、重复和升级时会遇到的后果。正文用具体状态推演和失败情景展开，速查表放在需要回看时再读。</p>
+<p>设申请编号为 <code>SIM-OBS-17</code>，研究 Halpha 窄带成像，拟拍 6 帧，每帧曝光 180 秒。教学规则规定每帧读出 20 秒，整份申请另有 300 秒校准时间。因此总预算是 <code>6 × (180 + 20) + 300 = 1500</code> 秒，在 1800 秒的模拟窗口内剩余 300 秒。</p>
+<p>这几个值会贯穿不同章节，但每章检查的对象不同。消息章节关心估算请求和结果的配对；状态章节关心 <code>total_s</code> 何时从不可用变为 1500；中断章节关心批准的是 v1 还是修订后的 v2；生产章节则检查时长、资料版本和权限是否在恢复后仍有效。计算满足预算，不代表目标可见或天气合适，系统要把这些未核验项留在草稿里。</p>
+<p>可以边读边记录三个时点：节点输入快照、节点返回增量、合并后的下一快照。这样遇到重复材料或审批丢失，能指出是哪一次转换出了问题，而不是笼统归因于模型不稳定。</p>
 <h2 id="源码快照">源码快照<a class="anchor" href="#源码快照" aria-label="链接到本节">#</a></h2>
-<p>本书以 2026-09-22 的两个官方仓库为基线：</p>
+<p>本书沿用 2026-09-22 归档的 Python 源码基线。下面的提交与包版本用于定位实现，不表示你的环境已经安装了它们。</p>
 <div class="table-wrap"><table>
 <thead>
 <tr>
-<th>项目</th>
-<th>提交</th>
-<th>本书对应包</th>
+<th>定位对象</th>
+<th>仓库提交</th>
+<th>包版本</th>
 </tr>
 </thead>
 <tbody><tr>
-<td>LangChain</td>
-<td><code>877ad8c7bfa3</code></td>
-<td><code>langchain 1.4.2</code>、<code>langchain-core 1.6.4</code></td>
+<td>组件与 Agent 工厂</td>
+<td>LangChain <code>877ad8c7bfa3</code></td>
+<td><code>langchain 1.4.2</code>，<code>langchain-core 1.6.4</code></td>
 </tr>
 <tr>
-<td>LangGraph</td>
-<td><code>1afaca35a0d4</code></td>
-<td><code>langgraph 1.2.12</code>、<code>langgraph-checkpoint 4.2.0</code></td>
+<td>状态图与检查点</td>
+<td>LangGraph <code>1afaca35a0d4</code></td>
+<td><code>langgraph 1.2.12</code>，<code>langgraph-checkpoint 4.2.0</code></td>
 </tr>
 </tbody></table></div>
-<p>本地浅克隆位于 <code>sources/repos/langchain</code> 与 <code>sources/repos/langgraph</code>。版本以后一定会变化，所以正文把内容分成三类：</p>
-<ul>
-<li><strong>稳定心智模型</strong>：消息、工具循环、状态更新、super-step、checkpoint 与 store 的职责。</li>
-<li><strong>当前 API</strong>：示例中的导入路径和函数签名。</li>
-<li><strong>版本提示</strong>：beta 接口或快照中新出现的能力，例如 <code>DeltaChannel</code>。</li>
-</ul>
-<p>遇到当前 API 与未来版本不一致时，先保留心智模型，再去官方 reference 核对名字。</p>
+<p>对应目录是 <code>sources/repos/langchain</code> 和 <code>sources/repos/langgraph</code>。正文引用这些目录下的实现时，可直接在本地核对。Deep Agents、MCP 及部分事件流能力还参考了另行归档的官方网页，它们不应被误认为两个仓库都已包含的功能。</p>
+<p>理解材料时，分开看三类证据：源码展示对象如何执行，公开文档描述支持的用法，教学模拟展示特定输入下的状态推演。比如 <code>DeltaChannel</code> 的 beta 标记和格式要求属于版本边界，不能仅凭普通列表 reducer 的经验推断兼容性。遇到安装版本不同，先检查签名和依赖，再决定是否照用片段。</p>
 <h2 id="阅读路线">阅读路线<a class="anchor" href="#阅读路线" aria-label="链接到本节">#</a></h2>
 <h3 id="想尽快做出-agent">想尽快做出 Agent<a class="anchor" href="#想尽快做出-agent" aria-label="链接到本节">#</a></h3>
-<p>读第 1、2、4、6、7、10、14 章。你会得到一条从工具循环到带记忆图的最短路径。</p>
+<p>先读第 1、2、4、6 章，理解协议和工具循环，再读第 7、10、14 章，把一次执行变成能暂停的工作流。运行两个离线入口，确认资料编号、1500 秒预算与审批分支都符合预期。之后按需求选择第 16 章的通用能力或第 17 章的外部工具接入，不必一开始就引入全部封装。</p>
 <h3 id="想读懂框架源码">想读懂框架源码<a class="anchor" href="#想读懂框架源码" aria-label="链接到本节">#</a></h3>
-<p>按顺序读完全书。第 5 章的 Runnable 和第 9 章的 Pregel 是连接表层 API 与运行时的两座桥。</p>
+<p>按章节顺序阅读更容易建立调用链。第 5 章解释统一调用表面，第 9 章解释图怎样推进；读完后，再看工厂怎样把组件装进图、编译器怎样把图变成任务。每次进入一个实现文件，带一个具体对象进去，比如 <code>ToolMessage</code> 或某个 channel 的写入集合。</p>
 <h3 id="正在排查线上问题">正在排查线上问题<a class="anchor" href="#正在排查线上问题" aria-label="链接到本节">#</a></h3>
-<p>直接看第 9 至 15 章。大部分问题属于四类：状态合并、恢复重放、副作用幂等、事件消费。</p>
+<p>先判断故障留下了什么证据。并发更新异常对应第 7 至 9 章，恢复和重复提交对应第 10、11 章，页面卡住或泄露字段对应第 12 章。第 15 章给出测试和源码检索方法。不要先调大 recursion limit，再去查为什么申请一直在修订。</p>
 <h2 id="示例约定">示例约定<a class="anchor" href="#示例约定" aria-label="链接到本节">#</a></h2>
-<p>书中使用“本地研究助手”作为贯穿案例。它读取本地资料、形成草稿，并在发布前等待人工审批。选择这个例子有三个原因：</p>
-<ul>
-<li>不需要付费模型也能验证控制流；</li>
-<li>同时覆盖循环、路由、并行、持久化和中断；</li>
-<li>容易区分框架行为与模型能力。</li>
-</ul>
-<p><code>examples/mini_agent.py</code> 只使用 Python 标准库，展示最小工具循环。<code>examples/research_assistant.py</code> 使用真实 LangGraph API，但模型与资料仍是确定性的，因此测试不会受网络和随机输出影响。</p>
+<p><code>examples/mini_agent.py</code> 用标准库模拟模型响应，固定提出资料检索与时长计算两次调用。它不会从任意中文句子可靠提取观测参数；固定的 6 帧与 180 秒是可检查的测试输入。</p>
+<p><code>examples/research_assistant.py</code> 使用真实 <code>StateGraph</code>、<code>InMemorySaver</code> 和 <code>interrupt()</code>，串起研究、草稿、拒绝修订与批准。所谓发布只生成 <code>local:</code> 前缀的本地回执，没有调用天文台、模型供应商或排班系统。<code>examples/test_examples.py</code> 补充预算不足、资料缺失、错误审批值和修订上限等离线断言。</p>
+<p>正文中的 <code>SIM-</code> 资料编号均指虚构教学记录。公式只考虑列出的开销，不模拟望远镜转动、导星、月光或信噪比。代码若依赖尚未定义的应用服务，会明确标为片段或伪代码；没有远程执行的内容，不以实测结果呈现。</p>
 <h2 id="如何看源码引用">如何看源码引用<a class="anchor" href="#如何看源码引用" aria-label="链接到本节">#</a></h2>
-<p>每章末尾的“源码入口”只列最值得打开的文件，不追求逐行覆盖。推荐采用三步法：</p>
-<ol>
-<li>先读公开类型和 docstring，确认输入输出。</li>
-<li>再读构建阶段，看对象如何被组装。</li>
-<li>最后跟运行阶段，看状态何时可见、何时被持久化。</li>
-</ol>
-<p>不要一上来从 6000 行的基类顺序往下读。带着问题找调用链，比统计读过多少文件更有效。</p>
-<blockquote>
-<p>本书是独立撰写的学习材料。外部教程仅用于比较教学顺序，正文、图解、示例业务和代码均重新组织。完整来源见附录。</p>
-</blockquote>
-</div><nav class="chapter-nav" aria-label="章节导航"><a class="next" href="01-two-layers.html"><small>下一章</small><strong>两层框架，一条执行链</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
+<p>章节末尾的路径是检索起点。先找到公开方法的输入和返回值，再找到构建或包装代码，最后追踪运行时消费这个返回值的位置。比如节点返回 <code>Command</code> 后，继续找路由与写入处理，才能知道更新和跳转如何共同生效。</p>
+<p>当文档和实现看起来不一致，先核对版本及是否走到同一个分支。测试文件常能给出最小边界输入，尤其适合核对重复消息、并行写入和恢复顺序。不要通过阅读文件长度判断理解程度，能手算一次状态变化才有助于定位下一次故障。</p>
+<p>本书的案例、正文和图解独立创作；第三方仓库与归档文档保留各自来源和许可，详见附录 B。</p>
+</div><nav class="chapter-nav" aria-label="章节导航"><a class="next" href="01-two-layers.html"><small>下一章</small><strong>四层栈，一条执行链</strong></a></nav></article></main><dialog class="menu-panel" data-menu-panel>
   <div class="menu-head"><span>全书目录</span><button class="tool-button" data-menu-close>关闭</button></div>
-  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>读前说明：这本书怎么读</a><a href="../chapters/01-two-layers.html"><span>01</span>两层框架，一条执行链</a><a href="../chapters/02-loop-from-scratch.html"><span>02</span>不用框架，先写出 Agent 循环</a><a href="../chapters/03-messages.html"><span>03</span>消息是运行时协议，不是聊天字符串</a><a href="../chapters/04-tools.html"><span>04</span>工具调用：Schema、执行与结果回填</a><a href="../chapters/05-runnables.html"><span>05</span>Runnable 与 LCEL：统一调用表面</a><a href="../chapters/06-create-agent.html"><span>06</span>create_agent 到底创建了什么</a><a href="../chapters/07-stategraph.html"><span>07</span>StateGraph：状态、节点、边与 reducer</a><a href="../chapters/08-control-flow.html"><span>08</span>路由、循环与 Command</a><a href="../chapters/09-pregel.html"><span>09</span>Pregel：图在运行时如何前进</a><a href="../chapters/10-persistence.html"><span>10</span>检查点与 Store：两种记忆边界</a><a href="../chapters/11-interrupts.html"><span>11</span>中断、重放与人工审批</a><a href="../chapters/12-streaming.html"><span>12</span>流式输出不是一种流</a><a href="../chapters/13-subgraphs.html"><span>13</span>子图与多 Agent：先隔离上下文</a><a href="../chapters/14-project.html"><span>14</span>端到端：本地研究助手</a><a href="../chapters/15-production.html"><span>15</span>生产检查表与源码阅读路线</a><a href="../chapters/appendix-glossary.html"><span>A</span>术语与 API 速查</a><a href="../chapters/appendix-sources.html"><span>B</span>来源、版本与原创性说明</a></nav>
+  <nav class="menu-list"><a href="../chapters/00-preface.html"><span>00</span>读前说明：这本书怎么读</a><a href="../chapters/01-two-layers.html"><span>01</span>四层栈，一条执行链</a><a href="../chapters/02-loop-from-scratch.html"><span>02</span>不用框架，先写出 Agent 循环</a><a href="../chapters/03-messages.html"><span>03</span>消息是运行时协议，不是聊天字符串</a><a href="../chapters/04-tools.html"><span>04</span>工具调用：Schema、执行与结果回填</a><a href="../chapters/05-runnables.html"><span>05</span>Runnable 与 LCEL：统一调用表面</a><a href="../chapters/06-create-agent.html"><span>06</span>create_agent 到底创建了什么</a><a href="../chapters/07-stategraph.html"><span>07</span>StateGraph：状态、节点、边与 reducer</a><a href="../chapters/08-control-flow.html"><span>08</span>路由、循环与 Command</a><a href="../chapters/09-pregel.html"><span>09</span>Pregel：图在运行时如何前进</a><a href="../chapters/10-persistence.html"><span>10</span>检查点与 Store：两种记忆边界</a><a href="../chapters/11-interrupts.html"><span>11</span>中断、重放与人工审批</a><a href="../chapters/12-streaming.html"><span>12</span>流式输出不是一种流</a><a href="../chapters/13-subgraphs.html"><span>13</span>子图与多 Agent：先隔离上下文</a><a href="../chapters/14-project.html"><span>14</span>完整案例：观测申请的证据与审批</a><a href="../chapters/15-production.html"><span>15</span>生产检查表与源码阅读路线</a><a href="../chapters/16-deep-agents.html"><span>16</span>Deep Agents：create_agent 之上的 harness</a><a href="../chapters/17-multi-agent-mcp.html"><span>17</span>多 Agent 与 MCP：协作模式与工具互联</a><a href="../chapters/appendix-glossary.html"><span>A</span>术语与 API 速查</a><a href="../chapters/appendix-sources.html"><span>B</span>来源、版本与原创性说明</a></nav>
 </dialog>
 <footer class="site-footer">基于官方源码快照独立撰写 · LangChain 1.4.2 · LangGraph 1.2.12</footer>
 <script src="../assets/reader.js"></script>

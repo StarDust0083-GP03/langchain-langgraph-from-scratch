@@ -1,136 +1,204 @@
 # 检查点与 Store：两种记忆边界
 
-LangGraph 有两套互补的持久化系统。checkpointer 保存一个 thread 的图状态，store 保存应用定义的跨 thread 数据。把“记忆”当成一个大字典，会同时破坏恢复语义和数据生命周期。
+申请 A 等待批准时，系统需要记住待审草稿和下一步任务；申请 B 开始时，系统可能还要读取同一课题组常用的滤镜偏好。前者属于一次流程的恢复，后者属于跨流程的业务数据，不能用一个含糊的“记忆对象”代替。
+
+Checkpointer 与 Store 分别服务这两个范围。它们都可以使用内存或持久实现，但跨 thread 共享和跨进程存活是不同维度。选择接口后，还要决定数据如何确认、更新、检索和删除。
 
 ## checkpointer 保存什么
 
-编译图时传入 checkpointer，调用时提供 `thread_id`：
+下面的片段假定 `builder` 已定义状态和节点：
 
 ```python
 from langgraph.checkpoint.memory import InMemorySaver
 
-checkpointer = InMemorySaver()
-graph = builder.compile(checkpointer=checkpointer)
-config = {"configurable": {"thread_id": "thread-42"}}
-result = graph.invoke(input_state, config)
+saver = InMemorySaver()
+graph = builder.compile(checkpointer=saver)
+address = {"configurable": {"thread_id": "proposal-SIM-OBS-17"}}
+paused = graph.invoke({"question": "研究 Halpha 申请", "notes": []}, address)
+snapshot = graph.get_state(address)
 ```
 
-运行时在步骤边界保存 checkpoint。它通常包含 channel values、版本、待处理任务和元数据，使图能够：
+运行时利用 channel 值、版本、任务和元数据等信息描述恢复位置。应用看到的 `StateSnapshot` 可用来检查当前值、待执行节点及相关任务，而不是只找一份聊天文本。
 
-- 延续同一会话；
-- interrupt 后恢复；
-- 查看历史 state；
-- 从历史点派生新分支；
-- 进程故障后继续。
-
-`thread_id` 是持久化地址的一部分，不只是 trace 标签。复用错误的 ID 会串会话，每次随机生成又会失去连续性。
+`thread_id` 是寻址的一部分。每次换新 ID 会启动不同实例，所有用户共用一个 ID 则可能混合状态。服务端应先核对申请归属，再映射到 thread，不能把客户端提交的任意 ID 当成访问许可。
 
 ## store 保存什么
 
-Store 使用 namespace 与 key 保存业务数据：
+比如某课题组确认今后的模拟研究默认使用中文、常选 Halpha，可保存为一条版本化偏好：
 
 ```text
-namespace = ("users", user_id, "preferences")
-key       = "writing-style"
-value     = {"tone": "concise", "language": "zh"}
+namespace: ("observatory", "team-cedar", "preferences")
+key:       "proposal-defaults"
+value:     {"language": "zh", "filter": "Halpha", "confirmed": true}
 ```
 
-它适合跨会话仍应存在的数据，例如用户偏好、经过确认的事实、共享知识或任务产物索引。节点可通过 runtime 访问 store，也可以在图外由应用服务读写。
+namespace 划分访问和组织范围，key 标识同一条业务记录。新申请会显式查询这项偏好，旧 thread 的待审位置却不能从偏好里恢复。Store 不会自动从聊天中判断哪句话应长期记住，也不会自动把一次临时方案提升为默认值。
 
-Store 不是自动长期记忆。何时写、写什么、如何纠错和过期，仍由应用定义。
+写入策略要说明确认来源、覆盖规则和失效条件。偏好被改正时应更新同一业务键，而不是每次追加一条互相冲突的自然语言记忆，再依赖相似度猜哪条最新。
+
+## Runtime 与 context_schema：节点如何访问 store
+
+身份来自可信调用上下文，store 由编译图注入。以下为一个可用于已配置 store 的节点片段，输入字段与节点由应用接入：
+
+```python
+from dataclasses import dataclass
+from langgraph.runtime import Runtime
+
+@dataclass(frozen=True)
+class Context:
+    team_id: str
+
+def load_defaults(state, runtime: Runtime[Context]):
+    if runtime.store is None:
+        raise RuntimeError("preference store is required")
+    namespace = ("observatory", runtime.context.team_id, "preferences")
+    item = runtime.store.get(namespace, "proposal-defaults")
+    return {"defaults": item.value if item else {"language": "zh"}}
+```
+
+构建时使用 `StateGraph(State, context_schema=Context)`，编译时传入 `store=store`，调用时传 `context=Context(team_id=trusted_team)`。其中 `trusted_team` 由应用认证得来，不是模型选择的字符串。thread 地址继续放在 config，用于恢复，与业务身份分开校验。
+
+连接、用户身份等通常只在本次运行使用，不宜直接序列化进 state。节点输出 `defaults` 后，是否保存到 checkpoint 取决于状态设计；若希望审批依据固定，应保存本轮读取的偏好版本，而非每次恢复悄悄换成当前值。
+
+### store 自带语义检索
+
+带 embedding 索引的 Store 可以按 query 检索相关值。下面构造一个两维教学 embedding，用来说明接口，不代表真实语义模型或检索质量：
+
+```python
+from langgraph.store.memory import InMemoryStore
+
+def teaching_embed(texts):
+    return [[1.0, 0.0] if "Halpha" in text else [0.0, 1.0] for text in texts]
+
+store = InMemoryStore(index={"embed": teaching_embed, "dims": 2, "fields": ["text"]})
+ns = ("observatory", "team-cedar", "rules")
+store.put(ns, "filter", {"text": "Halpha 教学滤镜说明", "revision": "r1"})
+store.put(ns, "timing", {"text": "逐帧读出开销", "revision": "r1"})
+hits = store.search(ns, query="Halpha", limit=1)
+assert hits[0].key == "filter"
+```
+
+真实 embedding 需与 `dims` 一致，字段选择决定嵌入哪些内容。单项可设置索引字段或 `index=False`，避免把无需语义召回的值加入索引。相似度只是召回信号，不能证明某条规则仍有效；结果还需核对 namespace、版本和批准状态。
 
 ## 选择边界
 
-| 问题 | Checkpointer | Store |
+| 申请助手要回答的问题 | 应查询的位置 | 为什么 |
 | --- | --- | --- |
-| 数据跟随哪个范围？ | 单个 thread | 用户、组织或业务 namespace |
-| 主要用途 | 恢复执行与短期状态 | 跨 thread 查询 |
-| 典型内容 | messages、plan、pending task | 偏好、事实、档案 |
-| 访问方式 | `thread_id` 与图状态 | `get/put/search` |
-| 是否参与节点重放 | 是 | 作为外部读写依赖 |
+| A 正等谁审阅哪个草稿 | A 的 checkpoint | 执行位置属于实例 |
+| B 是否可用组内默认语言 | 可信组 namespace 的 store | 数据跨申请共享 |
+| A 的工具参数是什么 | A 的状态或审计记录 | 需要追踪特定执行 |
+| 某条规则何时失效 | 版本化业务资料与 store 索引 | 不能只依赖历史对话 |
+| 进程重启后还能否继续 A | 持久 saver 与兼容图版本 | 内存内容不足以恢复 |
 
-一个常见组合是：checkpoint 保存本轮原始消息和摘要，store 保存用户确认过的长期偏好。下一轮从 store 选择相关偏好注入上下文，但不把用户全部历史复制到新 thread。
+Store 是外部读写依赖，不与每一步 checkpoint 自动形成统一事务。若节点先写偏好再失败，恢复可能再次写入，需要稳定键与更新规则，不能把每次重试都当成一条新记忆。
 
 ### 用换会话和换进程区分两种保存
 
-用户在 thread A 说默认中文，在 thread B 开始新任务。若中文只在 A 的 state 中，B 不会自动看到；应用把已确认偏好存入用户 namespace，B 才能主动读取。反过来，store 中有中文偏好，也不会告诉图 A 正暂停在哪个审批节点。
+在进程内，A 的状态保存默认中文，B 不会因此自动获得它；写到组 namespace 并让 B 主动读取后，才实现跨 thread 共享。反过来，即使 B 读到中文偏好，也不知道 A 暂停在 v2 的审批处。
 
-再退出进程重启，内存 saver 和 store 都丢失；持久实现才可能恢复。可见跨 thread 与跨进程是两个不同问题。设计测试时各做一次，不要把同一进程里第二次 invoke 成功当成灾后恢复证明。
+退出进程后，内存 saver 和 store 都消失。验证持久性需要启动一个新进程，通过相同地址重新读取；同一对象第二次调用成功只证明当前进程内的连续性。测试记录应明确这两个条件，避免把内存演示写成灾后恢复证明。
 
 ## 一次审批请求的两条时间线
 
-假设 `thread_id=review-42` 的流程在“等待审批”处中断，用户偏好则保存在 `("tenant-a", "users", "u7")`。恢复时读取同一个 thread 的 checkpoint，偏好通过可信租户身份另行查询 store：
+用一份申请和一条偏好记录分别列出事件：
 
-```text
-请求 A → 节点生成草稿 → checkpoint → interrupt 等待审批
-                                   │
-请求 B（同一 thread_id）→ Command(resume=审批结果) → 后续节点
-                                   │
-独立 store：用户偏好 ← 按租户和用户命名空间读取
-```
+| 时点 | thread `proposal-SIM-OBS-17` | 组偏好 store |
+| --- | --- | --- |
+| 开始研究 | 保存问题和参数 | 读取默认语言及其版本 |
+| 生成 v1 | 保存资料与草稿 | 不因生成而自动更新 |
+| 等待审批 | checkpoint 留下待恢复任务 | 其他申请仍可独立查询 |
+| 收到拒绝 | 同一 thread 写入意见，生成 v2 | 只有明确业务请求才改偏好 |
+| 批准后 | 生成本地回执 | 不保存 Python 执行位置 |
 
-如果请求 B 换了 `thread_id`，它不会恢复原审批；如果把用户偏好仅存在 checkpoint，另一个 thread 也不会自动看到。恢复还会重新进入中断所在节点，节点中位于 `interrupt()` 之前的代码可能再次执行；调用外部服务时应使用稳定业务幂等键，不能把 checkpoint 当作外部副作用的提交记录。这里的图表示概念顺序，具体重放范围取决于节点与任务边界，详见中断章节。
+恢复时节点可能重入，审批前读取外部偏好也可能再次发生。若重新读取会改变预览，就需要将研究时采用的版本固定在 state。checkpoint 不会冻结外部世界，store 更新也不会自动使旧批准失效，这些关系需要业务合同定义。
 
 ## InMemory 只适合开发
 
-`InMemorySaver` 与 `InMemoryStore` 在进程退出后丢失数据，也不解决多实例共享。它们适合单元测试、教程和本地调试。
+`InMemorySaver` 和 `InMemoryStore` 易于构造和清空，适合隔离测试；进程退出即丢失，也不解决多实例共享。示例选择它们是为了让控制流测试不依赖数据库。
 
-生产环境应使用持久化实现，并明确：
+切换到持久实现时，要检查连接初始化、迁移方式、索引与序列化、租户隔离和保留政策。还应定义同一 thread 的并发写入策略，避免两个恢复请求同时推进同一待审版本。数据库能保存数据，不等于业务可以无条件并行恢复。
 
-- 连接初始化和 schema migration；
-- 数据保留时间与删除请求；
-- 加密和敏感字段；
-- 并发更新与事务边界；
-- checkpoint 大小和索引；
-- 租户 namespace 隔离。
-
-数据库 checkpoint 成功，不代表工具调用的外部数据库事务也成功。跨系统仍需幂等键或 outbox 等业务方案。
+备份需要覆盖 checkpoint、store 与必要外部对象引用；恢复演练要在新进程验证。包含敏感资料的字段应有加密和访问控制，不能因为只有内部图读取就忽略保存责任。
 
 ## 状态为什么会无限增长
 
-最常见来源是完整 messages、检索原文、工具大结果和重复计划。每一步保存整份累计状态时，存储与读取成本会随会话长度上升。
+每轮完整资料、模型消息和重试记录都追加到 state，会使后续 checkpoint 反复携带更大的累计值。某个节点若返回旧列表加新增项，再经追加 reducer 合并，增长还会被重复放大。
 
-治理顺序：
-
-1. 不把无需恢复的数据放入 State。
-2. 工具结果只保留模型所需摘要和外部引用。
-3. 对旧消息做受控摘要，保留最近窗口。
-4. 给 thread 和 checkpoint 设置保留策略。
-5. 测量仍不足时，再考虑 delta 存储等优化。
-
-不要先删除历史再想审计需求。摘要和清理策略应由产品、合规与故障恢复共同决定。
+先检查记录是否重复和是否真的需要恢复。原始图像、整份手册与长堆栈通常适合放外部存储，state 留版本化引用；模型只需要摘要时，也不必反复发送原文。随后再决定近期窗口、摘要和 checkpoint 保留范围，最后才评估增量存储优化。
 
 ### 压缩状态之前先确定恢复还需要什么
 
-检索原文可以改存引用，但引用对应的文档若后来被修改，重放可能得到另一份材料。需要精确审计时，记录版本或内容指纹；只需继续业务时，可以重新核验当前资料，并明确这是重新决策。摘要省空间，也会丢细节，应保留返回原材料的路径。
+审批等待期间，草稿引用的资料 r1 不能在清理后只剩一个会变化的 URL。可保留来源、revision 和指纹，或在受控存储中留原始版本。否则批准后无法解释当时依据，也无法准确复现计算。
 
-消息清理还不能破坏正在等待的工具闭环和审批预览。清掉当前工具请求再恢复结果，会让下一次模型调用失去协议上下文。保留策略必须理解状态用途，而非统一删除最旧字段。
+清理当前 state 不一定删除历史 checkpoint，工具闭环和待审批预览也不能随意裁掉。应分别设计模型上下文压缩、当前恢复状态清理和历史数据删除。它们有不同风险，不能用一个“保留最近两条”同时解决。
+
+## 短期记忆管理：裁剪、删除与摘要
+
+上下文窗口有限，短期记忆需要按用途压缩。裁剪通常作用于本次模型输入，删除修改消息状态，摘要则建立一个新的信息表示。三者的持久影响不同，必须说明到底改了哪里。
+
+### 裁剪（trim）
+
+下面为模型调用前的消息准备片段：
+
+```python
+from langchain_core.messages.utils import trim_messages, count_tokens_approximately
+
+visible = trim_messages(
+    state["messages"],
+    token_counter=count_tokens_approximately,
+    max_tokens=800,
+    strategy="last",
+    start_on="human",
+    end_on=("human", "tool"),
+)
+```
+
+`visible` 是本次输入视图，并没有自动删除 state 中的原消息。近似 token 计数适合预算预检，不是 provider 精确计费；还需检查近期工具请求与观察是否完整，以及保留系统规则的策略是否满足应用要求。
+
+### 删除（RemoveMessage）
+
+若要修改当前消息状态，可以返回删除标记。以下为使用 `add_messages` 的节点片段：
+
+```python
+from langchain_core.messages import RemoveMessage
+
+def remove_obsolete_summary(state):
+    targets = [m.id for m in state["messages"] if m.id == "obsolete-budget-summary"]
+    return {"messages": [RemoveMessage(id=message_id) for message_id in targets]}
+```
+
+删除按消息身份工作，需要相应 reducer 支持。不要只按列表下标删旧消息而破坏工具轮次。当前删除也不会擦除已有历史检查点，涉及隐私删除请求时，必须继续清理保存层和日志中的副本。
+
+### 摘要（summarize）
+
+摘要可以保存“当前采用规则 r1，6 帧预算 1500 秒，目标高度未核验”，再缩小较早原始消息窗口。应区分已确认事实、临时方案和否定意见，避免把“未验证可见”压成“可见”。
+
+`langmem` 提供 `SummarizationNode`、`RunningSummary` 等相关封装；也可自己增加 `summary` 字段并定义更新。无论哪种方式，都要保存来源与未决项，检查摘要错误如何纠正。摘要改变上下文，若同时删除旧消息也改变恢复状态，但不会改变 checkpointer 的职责或自动清除旧历史。
 
 ## time travel 不是修改过去
 
-从历史 checkpoint 恢复通常会创建新的执行分支，而不是物理改写已有历史。节点会从选定状态重新运行，外部世界却不会自动回滚。旧 run 已发送的邮件、写入的数据库和产生的费用依然存在。
+从某个历史 checkpoint 继续，可以重新研究 8 帧方案并产生新分支。旧的本地回执或真实外部占用并不会因此消失，外部世界不跟随图历史回滚。
 
-因此 time travel 适合调试和重新决策，不是分布式事务回滚。
+调试时应把重放分支与真实提交环境隔离，或者让副作用服务按业务身份防重。比较两条分支可以解释不同参数如何导致 1500 与 1900 秒，却不能把其中一条从图里删去就认为真实资源已释放。
 
 ## 一个实用命名策略
 
-- `thread_id`：稳定表示一次会话或工作流实例。
-- `checkpoint_id`：定位 thread 中某个历史点，由系统生成或读取。
-- store namespace：从可信身份构造，包含 tenant/user/domain。
-- store key：稳定业务标识，不用自然语言整句充当 key。
+让地址可以解释业务，又不将敏感内容直接暴露其中。thread 表示一份工作流实例，checkpoint ID 定位该实例历史点；namespace 从可信组织和领域构造，key 用稳定业务名而非整句问题。
 
-任何来自请求参数的 namespace 都要经过服务端租户校验。
+申请重新开启时，是继续原流程还是创建新实例，应有明确规则。草稿 revision 也不要混同于 checkpoint ID：前者是领域版本，后者是运行存储定位，一份草稿可能跨越多个检查点。
 
 ### 一个地址正确，还不代表访问被授权
 
-thread_id 与 namespace 是持久化定位键，不是密码。服务端应从可信租户和业务对象映射它们，并核验请求者是否能读取或恢复这个流程。随机字符串难猜只能减少偶然碰撞，不能替代权限检查。
+知道 `proposal-SIM-OBS-17` 的人不应自动有权读取或恢复它。服务端需要核对组织、申请归属、可执行动作与当前批准版本，再使用内部地址访问图。
 
-删除用户数据时，也要分别处理 thread checkpoint、store 偏好、外部文档引用和运行日志。删掉当前 state 的字段，旧 checkpoint 仍可能保留；将数据移到 store，也没有自动获得完整删除政策。
+删除组数据时，要覆盖相关 threads、store namespace、资料对象和观测记录。删除当前一项 key 不代表整个用户历史已清空。若业务允许保留脱敏审计，应明确保留字段和期限，避免删除功能只改变界面显示。
 
 ## 源码入口
 
-- `langgraph/checkpoint/base/__init__.py`
-- `langgraph/checkpoint/memory/__init__.py`
-- `langgraph/store/base/__init__.py`
-- `langgraph/store/memory/__init__.py`
-- `langgraph/pregel/_checkpoint.py`
+- `langgraph/checkpoint/base/__init__.py`：查看 saver 合同、元数据和地址结构。
+- `langgraph/checkpoint/memory/__init__.py`：核对内存实现保存范围。
+- `langgraph/store/base/__init__.py`：检查 namespace、item 和搜索接口。
+- `langgraph/store/memory/__init__.py`：理解索引配置与过滤行为。
+- `langgraph/pregel/_checkpoint.py`：连接运行时保存内容与恢复机制。
+
+先区分“我在查哪个实例”与“我在读哪条业务数据”，再沿对应接口查找，能避免在错误存储里寻找审批或偏好。

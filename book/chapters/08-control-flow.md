@@ -1,122 +1,119 @@
 # 路由、循环与 Command
 
-有状态图真正区别于普通 pipeline 的地方，是下一步可以由运行结果决定，而且节点能够回到之前的步骤。控制流越灵活，停止条件和状态语义就越需要显式。
+6 帧方案需要 1500 秒，8 帧方案需要 1900 秒，两者面对 1800 秒窗口应走不同路径。状态图的路由把这种结果变成调度决定：预算满足才等待审阅，预算超限则停下解释或请求新参数。
+
+下一步由状态决定时，必须明确决定读取的是哪个值、是否已经更新，以及进入循环后靠什么停止。否则图虽然有条件边，实际仍可能使用旧判断或无限修订。
 
 ## 固定边与条件边
 
-固定边适合确定顺序：
+资料搜索完成后总要生成草稿，可以使用固定边；草稿形成后是否进入审批，则适合条件边。以下为 builder 和相应节点已经定义后的片段：
 
 ```python
 builder.add_edge("search", "draft")
-```
 
-条件边把路由与节点更新分开：
-
-```python
-def route(state: State) -> str:
-    return "publish" if state["score"] >= 0.8 else "revise"
+def after_draft(state):
+    if state["status"] == "needs_evidence":
+        return "halt"
+    return "review" if state["total_s"] <= state["window_s"] else "halt"
 
 builder.add_conditional_edges(
-    "review",
-    route,
-    {"publish": "publish", "revise": "revise"},
+    "draft", after_draft, {"review": "review", "halt": "cancel"}
 )
 ```
 
-路由函数最好是纯函数。若它同时写数据库、调用模型或修改状态，就很难解释重放时发生了什么。
+路由只解释已写入状态，不在这里另查排班或发送通知。这样同一输入能得到相同选择，状态历史也能解释为何走到某条分支。真实资源状态若需要再核验，应作为明确节点，而非隐藏在路由函数里。
 
 ## `Command` 合并更新与跳转
 
-当节点的业务结果同时决定状态更新和下一节点时，可以返回 `Command`：
+审核决定同时改变 `approved` 和后继位置时，用 `Command` 可以把这项决定放在一起。以下片段假定 `decision` 已由可信外部输入获取并校验：
 
 ```python
 from typing import Literal
 from langgraph.types import Command
 
-def review(state: State) -> Command[Literal["publish", "revise"]]:
-    passed = state["score"] >= 0.8
+def apply_decision(state, decision) -> Command[Literal["publish", "revise"]]:
+    accepted = decision["approved"]
     return Command(
-        update={"approved": passed},
-        goto="publish" if passed else "revise",
+        update={"approved": accepted, "feedback": decision.get("feedback", "")},
+        goto="publish" if accepted else "revise",
     )
 ```
 
-类型参数列出可能目标，便于图可视化和静态理解。`Command` 适合“决定本身就是节点结果”的场景；独立条件边适合“状态已经写好，另一个纯函数负责解读”。
-
-不要在同一路径上既添加固定边，又从节点返回 `goto`，除非确实希望两个目标都被调度。
+这展示更新和调度表达，不是可直接注册的完整节点，因为应用还要负责提供 `decision`。第 14 章的真实节点在内部调用 `interrupt()` 获得它。类型参数标明目标，有助于检查和可视化，不代替运行时业务校验。
 
 ### 更新与跳转为什么应来自同一个决定
 
-审核通过时，状态写 approved=True 并调度 publish；拒绝时写 False 并调度 revise。Command 将两者放在一次节点结果里，便于检查它们一致。若一处按 score 更新、另一处按过时字段路由，就可能出现“状态说拒绝，流程却发布”。
+拒绝 v1 后，状态应写 `approved=False` 并进入修订。如果另一处路由仍读取旧的 `approved=True`，就可能错误发布。让更新和跳转使用同一份已验证决定，能减少这种分离判断。
 
-Command 也没有删除已有固定边的意思。节点同时设置静态后继和 goto，可能激活多个目标。控制流设计应先写清允许后继，再选择一种表达，不把动态图命令误当成自动覆盖所有边。
+`goto` 不会抹去原有静态边。若 `review` 同时有通向 `publish` 的固定边，又返回 `goto="revise"`，两个目标都可能被调度。测试时应断言拒绝分支没有发布，不只断言修订出现了。
 
 ## `Send` 表示动态 fan-out
 
-并行任务数量在运行时才知道时，可以为每个任务发送独立输入。例如把多个资料条目并行摘要，再通过 reducer 汇总结果。
+一份申请可能附带任意数量的参考记录，适合为每条记录安排一个核验任务。下面是已定义 `check_record` 节点后的路由片段：
 
-```text
-          ┌─ summarize(item 1) ─┐
-items ────┼─ summarize(item 2) ─┼─ reducer -> report
-          └─ summarize(item 3) ─┘
+```python
+from langgraph.types import Send
+
+def fan_out(state):
+    return [Send("check_record", {"source": source, "proposal_id": state["proposal_id"]})
+            for source in state["sources"]]
 ```
 
-fan-out 节点不要把完整大状态复制到每个任务，只发送子任务真正需要的字段。否则内存、序列化和 trace 体积会按任务数放大。
+每个任务只拿当前资料和申请身份，避免复制整段会话。结果应带来源 ID 写入可合并字段，再由下一步按来源排序、去重和检查缺项。任务数量为零时也应定义行为，比如直接输出证据不足，不能假定聚合节点必定被唤醒。
+
+| 输入集合 | 子任务载荷 | 聚合必须核对的内容 |
+| --- | --- | --- |
+| 2 个规则来源 | 各自编号与版本 | 两项都已返回且版本正确 |
+| 1 个被拒绝来源 | 拒绝原因与来源身份 | 是否允许缺项继续 |
+| 空来源集合 | 没有动态任务 | 另一路径表达证据不足 |
+
+这张表强调基数和完成状态，动态并行并不自动给出“所有证据齐全”的业务结论。
 
 ## 循环要有业务不变量
 
-常见循环包括：
-
-- model 与 tools 循环，直到没有工具调用；
-- draft 与 review 循环，直到分数达标；
-- plan 与 execute 循环，直到任务列表为空；
-- retry 与 fallback 循环，直到预算耗尽。
-
-每个循环至少需要一个单调变化的量，例如剩余步数减少、待办数减少、已尝试方案集合增加。只依赖模型说“完成了”并不可靠。
+修订循环会消耗版本和预算。示例只允许审阅 v1、v2、v3，拒绝第三版后进入 `review_limit`，不再生成 v4。状态中始终保持已研究资料不因单纯修订而重复追加。
 
 ```python
-if state["attempts"] >= 3:
-    return Command(update={"status": "needs_human"}, goto="escalate")
+next_node = "revise" if state["revision"] < 3 else "cancel"
 ```
 
-LangGraph 的 recursion limit 是最后保险，不是业务停止条件。命中它通常意味着图设计没有表达完成状态。
+实际循环也可以跟踪待核验来源、已尝试查询、费用或截止时间。每轮必须说明什么在向停止推进，不能只依赖模型宣称完成。框架 recursion limit 保护图步骤，业务上限则给出用户可理解的原因。
 
 ### 修订循环需要一个可观察的前进条件
 
-草稿被拒绝后，可以带回具体修改意见、增加 revision_count，再生成新版本。仅从 revise 无条件回 review，模型可能不断输出同样草稿。比较版本变化、材料是否增加和剩余预算，才能判断下一轮有没有意义。
+拒绝 v1 的意见若是“注明尚未核验目标高度”，修订节点应保存这项意见、增加 revision，并写入新草稿。没有修改意见或新资料时，反复生成相同文本没有研究收益。
 
-停止时也应区分成功、无法补证据和预算耗尽。把三者都接 END，图确实停了，用户却不知道任务完成到什么程度。结束状态要保存原因，供 UI 与测试读取。
+判断进展可比较来源集合、草稿指纹和未解决项。三次拒绝后结束，并不表示申请失败的所有原因都已查清，而是当前修订额度耗尽。将 `published_locally`、`needs_evidence`、`over_budget` 和 `review_limit` 分开，用户和测试才知道流程停在哪里。
 
 ## 并行不是竞态自由
 
-同一 super-step 的节点并行运行，它们都读取上一步结束时的状态。两个节点不能通过“谁先写完”互相通信。本步写入统一在 Update 阶段合并，然后下一步才可见。
+规则节点和时间节点同一步运行时，都只能读取前一步状态。规则节点不会因为快一些就让时间节点看到新字段，所有本步写入等合并后才对下一步可见。
 
-如果两个分支都写同一个默认覆盖字段，结果不是最后完成者获胜，而是并发更新冲突。用 reducer 只是解决合并方式，不会自动解决业务冲突。
+reducer 解决的是写入合并，不能自动解决领域冲突。两个专家对可行性一赞一反，应保存两份独立判断和证据，让聚合节点显式处理。把布尔值改成列表只能保住信息，仍需定义怎样作决定。
 
 ## 错误路由与异常不是一回事
 
-“检索没有命中”通常是合法业务状态，适合写入 state 后走条件边。“数据库连接断开”是运行异常，适合 retry policy 或 error handler。把所有异常转成 `status="failed"` 会丢失 traceback 和重试语义；把所有业务空结果抛异常又会制造虚假告警。
+`needs_evidence` 表示搜索已完成但无匹配，`over_budget` 表示计算得到超限结果，都适合正常返回并路由。连接断开则可能尚未获得结果，应保留故障和有限重试语义。
 
-建议区分：
-
-- 业务分支：节点正常返回，图显式路由；
-- 可重试故障：抛异常，由有限重试处理；
-- 不可恢复故障：终止并保留 checkpoint；
-- 需要决策：interrupt，等待人或外部系统。
+当人必须作选择时使用中断；当权限被拒绝时，不应通过不断换工具绕开。分类决定图如何继续，也决定观测如何计数。把服务故障伪装成无资料，会让模型错误解释成知识缺口；把正常超预算抛成系统错误，又会制造无意义重试。
 
 ## 父图与子图的跳转
 
-节点返回 `Command.PARENT` 可把更新和控制交给父图。这对 handoff 有用，但会增加局部阅读难度。跨图跳转应保持少量且命名清楚，通用数据交换优先通过共享 schema 或明确的输入输出完成。
+子图可以通过 `Command(graph=Command.PARENT, ...)` 将更新和控制交到父图。适合明确 handoff，但更新的共享字段需要父层可接受的合并语义，不能假定子图能任意重写父状态。
+
+研究专家通常只需要回传 findings，父图负责预算与审批。若没有正式控制权转移需求，输入输出映射更容易测试。跨图跳转应少量且有明确目标，避免读一个局部函数却无法知道它会跳到整个应用的哪里。
 
 ### 错误分支与异常恢复分别表达什么
 
-检索没有结果，可以路由到澄清问题；检索服务超时，则应按依赖故障有限重试。前者是合法业务状态，后者可能根本没有得到观察。吞掉异常并写成“无资料”，会让之后的路由基于假状态做决定。
+假设子图核验来源 A 成功、来源 B 超时。父图可以保留 A，仅重试 B；也可以以资料未齐终止。无论选择哪条，都要区别“B 没支持结论”和“B 尚未被观察”，否则聚合得到虚假的反对证据。
 
-父子图跳转同样应保持边界。子图只回传已审核 findings，父图决定发布，不必让专家直接改变所有父状态。将需要跨域修改的字段列出来，比让 Command 任意跳转更容易测试。
+跨图时还应把失败身份带回来。只返回 `failed=True` 无法判断该重试哪个来源，直接把子图全部历史复制到父层又扩大上下文。窄结果对象可以同时包含来源、完成状态和失败类型，使路由有足够依据。
 
 ## 源码入口
 
-- `langgraph/types.py`：`Command`、`Send`、`interrupt`。
-- `langgraph/graph/_branch.py`：条件分支。
-- `langgraph/graph/state.py`：边与编译。
-- `langgraph/pregel/_algo.py`：任务准备与写入应用。
+- `langgraph/types.py`：阅读 `Send`、`Command` 和动态中断的字段定义。
+- `langgraph/graph/_branch.py`：跟踪路由返回目标如何转换成调度信息。
+- `langgraph/graph/state.py`：对比固定边和等待多个来源的边。
+- `langgraph/pregel/_algo.py`：观察任务准备和写入应用的时序。
+
+用一次批准、一次拒绝和一次预算不足的轨迹比较，会比单看图像更容易发现多余固定边或缺失结束状态。

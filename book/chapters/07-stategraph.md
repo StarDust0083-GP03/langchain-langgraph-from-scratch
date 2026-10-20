@@ -1,131 +1,126 @@
 # StateGraph：状态、节点、边与 reducer
 
-`StateGraph` 的公开心智模型很小：State 是当前快照，Node 做工作并返回状态增量，Edge 决定下一步。但真正决定图是否可靠的是 reducer，因为它定义“增量如何变成下一份状态”。
+研究流程里，资料是累计的，草稿是可替换的，批准必须对应当前版本。若把这些字段都当成普通字典写入，串行正常例子可能运行，但并行检索和拒绝修订会暴露含义冲突。
+
+StateGraph 要求把状态形状、节点结果和合并规则写出来。节点读取一份快照，返回本次变化，运行时再形成下一份快照。明确每个字段怎样变化，比增加更多节点更能改善可解释性。
 
 ## StateGraph 是构建器
 
-源码 docstring 明确提醒：`StateGraph` 不能直接执行，必须先 `compile()`。构建阶段允许继续添加节点和边；编译阶段验证结构，并把 schema、channel、节点和路由转换成可运行的 `CompiledStateGraph`。
+以下完整例子演示固定预算步骤，不使用模型或网络：
 
 ```python
-from typing_extensions import TypedDict
+from typing import TypedDict
 from langgraph.graph import START, END, StateGraph
 
-class State(TypedDict):
-    question: str
-    answer: str
+class BudgetState(TypedDict):
+    frames: int
+    exposure_s: int
+    total_s: int
 
-def answer(state: State) -> dict:
-    return {"answer": state["question"].upper()}
+def budget(state: BudgetState) -> dict:
+    return {"total_s": state["frames"] * (state["exposure_s"] + 20) + 300}
 
-builder = StateGraph(State)
-builder.add_node("answer", answer)
-builder.add_edge(START, "answer")
-builder.add_edge("answer", END)
-graph = builder.compile()
+builder = StateGraph(BudgetState)
+builder.add_node("budget", budget)
+builder.add_edge(START, "budget")
+builder.add_edge("budget", END)
+compiled = builder.compile()
+result = compiled.invoke({"frames": 6, "exposure_s": 180})
+assert result["total_s"] == 1500
 ```
 
-节点返回 partial state，不必复制整个对象。返回整份旧状态既浪费，也容易让并行更新覆盖彼此。
+构建器尚不能执行，`compile()` 才生成运行对象。TypedDict 描述形状，不等于完整运行时领域校验；真实输入仍要验证正数、单位和上界。本例刻意聚焦状态更新，不代表任意帧数都有效。
 
 ## State、Input 与 Output 可以不同
 
-图可以声明总状态、输入 schema 和输出 schema。输入只暴露调用方允许提供的字段，输出只返回调用方需要看到的字段，内部状态仍可包含计划、重试计数和中间产物。
+公开输入可只包含申请问题和观测参数，内部状态还保存资料、修订号与失败原因，公开输出只暴露建议和本地回执。用不同 schema 可以减少接口耦合，避免用户提交内部状态字段。
 
-这是一种接口约束，不是保密机制。当前官方文档特别提醒，`stream_mode="values"` 默认可能包含私有 channel。敏感数据不应仅依赖 output schema 隐藏，事件出口也必须过滤。
+这不构成所有出口的保密保证。`values` 流、调试信息或 trace 可能包含更宽的状态。若内部含未公开课题编号，应在用户事件适配层做字段白名单，同时控制 checkpoint 与日志访问，不把 output schema 当成统一脱敏器。
 
 ## 默认 reducer 是覆盖
 
-未标注 reducer 的字段使用 last value 语义：节点返回的新值覆盖旧值。
+`draft: str` 使用普通单值语义，后续修订覆盖当前草稿很自然。但两个并行专家若都写 `draft`，同一步里没有合理的单一赢家，运行时通常会报告并发更新错误。
 
-```python
-class State(TypedDict):
-    status: str
-```
-
-若两个并行节点在同一 super-step 写 `status`，运行时无法确定哪一个应该赢，通常会报告并发更新冲突。解决方案不是赌执行顺序，而是重新设计：
-
-- 两个节点写不同字段；
-- 给字段定义可合并 reducer；
-- 让聚合节点在下一步做显式选择。
+修复方法取决于含义。两份独立意见应放入不同字段或可累计结果集合；一份最终草稿应由下一步聚合节点选择生成。不要用“谁先结束”“谁最后返回”表达权威性，也不要为了消除异常给所有字段添加加法 reducer。
 
 ## reducer 是二元合并函数
 
+资料记录可以声明为累计列表：
+
 ```python
 from operator import add
-from typing import Annotated
+from typing import Annotated, TypedDict
 
-class State(TypedDict):
+class EvidenceState(TypedDict):
     notes: Annotated[list[str], add]
 ```
 
-节点返回 `{"notes": ["new"]}`，运行时计算 `add(old, update)`。好的 reducer 应尽量满足：
+运行时用旧值和本次更新计算新值。追加 reducer 要求节点只返回新增记录，返回 `old_notes + new_notes` 会让旧内容再累积一遍。纯函数、确定性以及适合并行合并的代数性质有助于重放；列表追加虽然结合，但不交换，展示顺序仍应按稳定资料编号整理。
 
-- 确定性：同样输入得到同样结果；
-- 无副作用：不修改外部状态；
-- 能处理并行写入顺序，必要时自行建立稳定排序；
-- 语义明确：追加、集合并集、最大值与覆盖不能混用。
-
-空列表也不一定表示清空。对追加 reducer 而言，`old + []` 仍是 old。需要绕过 reducer 时使用当前 API 提供的 `Overwrite`，或重新设计独立的 reset 字段。
+空列表对追加字段表示没有新增，不能表示清空。需要替换累计值时，当前 API 可用 `Overwrite` 绕过 reducer，或者设计明确的重建步骤；同一步多处覆盖仍应避免。清理动作要有独立语义，不依靠含糊空值。
 
 ### 用两个检索节点手算一次合并
 
-旧 notes 为 `["原材料"]`，并行节点分别返回 `["文档 A"]` 与 `["文档 B"]`。追加 reducer 合并后保留三份材料，但 A、B 的排列不能被当作业务优先级。若要求按日期或证据等级排序，应保存稳定 ID 和属性，由聚合步骤显式整理。
+设旧资料为 `[SIM-REQUEST-1]`，规则支路返回 `[SIM-FILTER-2]`，预算支路返回 `[SIM-TIME-4]`。合并后应有三个来源，业务应按来源身份去重和排序，不能把列表首项自动解释成最重要证据。
 
-若节点每次返回旧 notes 加新增项，reducer 又把整份列表追加到旧状态，就会重复原材料。partial update 表达本次新增，reducer 表达历史如何累积，两个职责不能同时各做一次追加。修订一个值则应考虑覆盖语义，不要把所有字段都设成累计。
+| 节点返回方式 | 合并后的记录数量 | 原因 |
+| --- | --- | --- |
+| 各支路只返回新资料 | 3 | 一份旧资料加两份更新 |
+| 各支路返回旧资料加新资料 | 5 | 旧资料被追加了两遍 |
+| 两支路写同一个无 reducer 字段 | 无有效结果 | 单值 channel 拒绝并发更新 |
+
+这三种行为来自更新合同，与检索结果是否正确是两个问题。测试除了看文本，还应断言来源集合和数量。
 
 ## Node 只是函数，但签名有层次
 
-最简单的节点只接收 state。需要不可变运行上下文时接收 `Runtime[Context]`，需要 config 时可接收 Runnable config。依赖注入应保持可见，不要从全局变量偷偷读取用户身份或数据库连接。
+节点最少接收 state，返回字典增量。需要业务身份或连接时可接收 `Runtime[Context]`，需要运行配置时使用 Runnable config。依赖从签名中可见，测试便能提供固定上下文，而不必修改全局变量。
 
-节点粒度可以用一个判断标准：这个步骤是否值得独立重试、观测或恢复？如果答案都是否，可能不需要拆成节点。
+节点粒度可以按恢复成本判断。数值格式化不值得单独保存，外部资料查询可能值得独立重试，生成草稿与等待批准则应分开。节点越粗，失败后重复工作越多；越细，schema、调度和版本兼容的维护面越大。
 
 ## Edge 表示调度，不表示数据复制
 
-固定边让目标节点在源节点完成后运行。条件边根据路由函数返回值选择目标。多个出边可以激活并行节点，多个入边则要区分“任一完成即可触发”与“等待全部完成”的语义。
+预算节点到审批节点的边意味着前者完成后可激活后者，审批读取的是共享状态视图，并非沿边传来一个私有字典。分支输入若需要独立载荷，应显式使用相应任务机制或转换节点。
 
-图的共享 state 由 channel 维护，不是沿每条边复制一份字典。节点在同一 super-step 中看不到彼此本步刚写入的数据，这一规则要到 Pregel 章节详细解释。
+多个出边可安排同一步并行工作。同一步任务读取一致的前步快照，某支路先算出 `total_s`，另一支路也不会立即读到它。需要先算后读时，应表达先后依赖。
 
 ### 边的含义是安排工作，不是传递专属字典
 
-search 到 draft 的边告诉运行时何时激活 draft，draft 读取的是符合 schema 的状态视图。如果两条并行支路都需要 question，它们可以读取同一步快照；一条支路不能靠先执行几毫秒让另一条读到新 notes。
+规则检查与时长检查都依赖原申请，可以并行；最终结论依赖两者，应明确等待全部完成。`add_edge(["rules", "timing"], "conclude")` 表达共同依赖，比单独添加两条普通入边更直接。
 
-聚合节点若必须等两个来源都完成，应明确表达等待关系。只画两条普通入边，不能在不了解触发规则时假定它们等价于“全部到齐”。图形相似，调度合同仍需用执行轨迹验证。
+如果两支路长短不同，尤其不能仅凭图上两条线就推断聚合只执行一次。用节点执行计数和各步输入断言，确认结论节点在两项结果都可见时运行，避免产生早到的不完整建议。
 
 ## compile 做的不只是画图
 
-编译阶段会：
+编译会校验节点和边引用，从状态注解建立 channel，将节点及路由接到触发和写入机制，并绑定保存、store、缓存和中断配置。得到的是可以执行的 Runnable 图，而不是一张图片。
 
-- 校验节点和边引用；
-- 为状态字段建立 channel；
-- 把节点转成 Pregel actor；
-- 建立触发器和写入通道；
-- 绑定 checkpointer、store、cache 与 interrupt 配置；
-- 生成可调用的 Runnable 图。
-
-因此 builder 与 compiled graph 应视为两个阶段。运行后再修改 builder，不会自动改变已经编译出的对象。
+编译后再给原 builder 增加节点，不应期望已存在的运行对象随之更新。部署时应构建新图并管理版本；恢复旧 thread 时，节点名和字段合同仍要匹配。静态检查能发现部分结构错误，不能证明业务分支都正确。
 
 ## 一个状态设计检查表
 
-为每个字段写下：
+可以为申请写一份字段合同，而非笼统规定所有数据都入 state：
 
-1. 谁能写？
-2. 是覆盖还是累计？
-3. 两个并行节点同时写会怎样？
-4. 是否需要进入 checkpoint？
-5. 是否会被发给模型或流给客户端？
-6. 如何清理，最大会增长到多大？
+| 字段 | 写入者 | 合并含义 | 生命周期与出口 |
+| --- | --- | --- | --- |
+| `notes` | 检索节点 | 追加新版本化来源 | 草稿和审批所需，可限量 |
+| `total_s` | 预算节点 | 单值替换 | 当前参数的计算结果 |
+| `draft` | 草稿与修订节点 | 当前版本覆盖 | 审批预览可见 |
+| `revision` | 生成及修订节点 | 单调增加 | 绑定批准与回执 |
+| `receipt` | 本地发布节点 | 单值确认结果 | 最终输出，不冒充远程回执 |
 
-如果这些问题答不出来，先不要添加节点。多数图问题最初都是状态模型问题。
+还应为每项说明最大规模、删除方式和敏感程度。若两个写入者给字段不同含义，先拆开字段再考虑合并，避免把语义冲突交给 reducer 隐藏。
 
 ### 状态字段越多，恢复合同越大
 
-保存完整检索文档，恢复时资料可用，但每次 checkpoint 和事件输出都更重。保存文档 ID 更小，却要确保重读得到同一版本且仍有权限。两种设计都有代价，应根据是否需要精确重现来决定，不能统一选最短 state。
+保存整份仪器手册有利于重现，却放大每一步序列化成本；只存 URI 更小，却可能在恢复时读到新版。可用资料编号、revision 和内容指纹固定证据，按审计需求决定是否另行留存原文。
 
-编译时绑定的图结构、节点名称和状态 schema 也参与恢复。上线后直接改字段含义，旧 checkpoint 可能仍能反序列化，却被新逻辑错误解释。版本测试要验证语义，而不仅验证数据能读出来。
+字段改名或语义变化也会影响旧 checkpoint。`window_s` 若以后改成分钟，数据仍可反序列化，却会导致严重预算误判。版本验证必须运行旧状态下的计算和路由，不能仅测试“能加载”。
 
 ## 源码入口
 
-- `langgraph/graph/state.py`
-- `langgraph/graph/_branch.py`
-- `langgraph/channels/last_value.py`
-- `langgraph/channels/binop.py`
-- `langgraph/graph/message.py`
+- `langgraph/graph/state.py`：检查 schema 如何转成 channel，以及编译时绑定内容。
+- `langgraph/graph/_branch.py`：核对条件边的目标处理。
+- `langgraph/channels/last_value.py`：理解单值字段为何拒绝并发写。
+- `langgraph/channels/binop.py`：观察二元 reducer 的应用方式。
+- `langgraph/graph/message.py`：对照通用列表与消息专用合并。
+
+可以从 `notes` 注解开始一路追到写入应用，确认“节点返回增量”在代码中怎样成为下一步的可见值。

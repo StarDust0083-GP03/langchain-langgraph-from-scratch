@@ -1,126 +1,102 @@
 # Runnable 与 LCEL：统一调用表面
 
-Runnable 的价值不是管道运算符本身，而是把不同组件放到同一个执行协议里。源码对它的定义是“一项可以调用、批处理、流式处理、变换和组合的工作单元”。
+观测资料进入草稿前，常要经过规范化、检索、提示构造和解析。每个组件若使用不同的调用约定，组合代码就要反复处理异步、配置和回调。Runnable 把这些约定集中起来，LCEL 则提供组合表达式。
+
+它适合组织数据怎样经过组件，不负责替应用保存隔天等待的审批状态。理解这个边界，可以把纯变换留在组件链里，把恢复位置留在状态图里。
 
 ## 一套接口
 
-一个 Runnable 通常暴露：
+| 方法或包装 | 观测助手中的用法 | 需核对的实现细节 |
+| --- | --- | --- |
+| `invoke`、`ainvoke` | 处理一条规则查询 | 异步是否只是线程包装 |
+| `batch`、`abatch` | 对一组资料查询取结果 | 是并发单调用还是服务端批量 |
+| `stream`、`astream` | 展示草稿增量 | 组件是否真正产生增量 |
+| `with_config` | 绑定运行标签和并发限制 | 子组件是否收到配置 |
+| `with_retry` | 限次重试不稳定依赖 | 包住了多少已成功工作 |
+| `get_graph` | 检查组合结构 | 可视化不等于恢复能力 |
 
-| 方法 | 含义 |
-| --- | --- |
-| `invoke` / `ainvoke` | 单输入同步或异步调用 |
-| `batch` / `abatch` | 多输入批处理 |
-| `stream` / `astream` | 增量产出 |
-| `with_retry` | 包装重试策略 |
-| `with_config` | 绑定 tag、metadata、并发配置等 |
-| `get_graph` | 查看组合结构 |
-
-默认实现会提供一些退化路径，例如异步方法可能在线程池里调用同步实现。统一表面不等于统一性能，provider 或组件只有覆写原生 batch/stream 才能得到对应优化。
+默认接口会补足一些调用路径，组件可以覆写它们以提供原生能力。因此两个 Runnable 都有 `batch`，不意味着相同吞吐；一个受远程配额限制，另一个只是本地函数，增加并发的后果不同。
 
 ## 顺序与并行
 
-LCEL 用 `|` 构造 `RunnableSequence`：
+下面的代码只依赖 `langchain-core`，用真实 LCEL 组合处理一个申请标签：
 
 ```python
 from langchain_core.runnables import RunnableLambda
 
-normalize = RunnableLambda(lambda s: s.strip().lower())
-length = RunnableLambda(len)
-chain = normalize | length
-
-assert chain.invoke("  LangGraph  ") == 9
-```
-
-字典出现在序列中时会被提升为 `RunnableParallel`，同一个输入送给多个分支：
-
-```python
-inspect = normalize | {
-    "length": RunnableLambda(len),
-    "prefix": RunnableLambda(lambda s: s[:4]),
+clean = RunnableLambda(lambda text: text.strip().upper())
+inspect = clean | {
+    "tag": RunnableLambda(lambda tag: tag),
+    "is_simulation": RunnableLambda(lambda tag: tag.startswith("SIM-")),
 }
+result = inspect.invoke(" sim-obs-17 ")
+assert result == {"tag": "SIM-OBS-17", "is_simulation": True}
 ```
 
-并行不是数据依赖分析。字典中的分支彼此独立，如果一个分支需要另一个分支的输出，应改成后续 sequence 或显式图节点。
+`|` 形成顺序组合，字典中的分支被转换成并行组合。两个分支接收清理后的同一字符串，它们不会互相读结果。需要根据 `is_simulation` 决定标签展示方式，应在字典结果后再接一个步骤，而不是让分支依赖执行先后。
 
 ### 并行组合怎样形成下一步输入
 
-前面的 inspect 把同一份规范字符串分别交给 length 与 prefix，等分支结果收集后形成字典。它没有先算 length 再让 prefix 读取长度。需要这种依赖时，应把字典结果交给后续 sequence；运行得快或先返回，不会改变依赖关系。
+假设一条支路提取资料编号，另一条计算查询长度。两者都完成后，组合结果是具名字典，下游再读取字段。某分支先返回，不会自动触发依赖另一个分支的下游计算；这与“收到任意一个结果就继续”的竞速模式不同。
 
-batch 同样要区分执行协议与 provider 的服务批处理。框架可以并发调用多个输入，但供应商是否合并请求、是否限流，由具体实现决定。增加并发可能提高等待效率，也可能更快触发配额，不能只凭接口名字预测吞吐。
+批处理则在另一维度上并行：同一个组件处理多个输入。测试时要分别检查输入输出顺序和错误行为，不把 `batch` 当作跨申请共享状态。提高 `max_concurrency` 可能减少本地等待，也可能让资料服务更早触发限流，需结合实际请求数测量。
 
 ## 配置如何传播
 
-Runnable config 承载 callback、tag、metadata、最大并发和可配置字段。组合调用时，框架把配置向子 Runnable 传播，所以一次顶层调用能形成完整 trace。
+Runnable config 携带 tag、metadata、callback、并发上限及可配置值等执行信息。顶层调用向子组件传播配置，可以把一次“研究申请”与其中的检索、模型、解析关联到同一 trace。
 
-业务状态不应塞进 config。可观测元数据、执行参数与业务数据应分开：
+领域数据应放在输入或图状态中；身份和服务依赖适合放进可信 runtime context。不要仅从 trace metadata 读取 `tenant_id` 决定资料权限，因为观测标签和授权来源有不同的信任要求。
 
-- 输入和 State：会影响业务结果的数据；
-- Runtime context：本次 run 的依赖或身份；
-- Runnable config：执行与追踪配置。
-
-把 user ID 只放在 trace metadata 里，然后在工具里当作授权依据，是危险的边界混用。
+比如用 `with_config(tags=["observatory-research"])` 标记调用很合理，把批准版本只写进 metadata 则不够：后续提交节点需要可检验、可恢复的业务字段。配置传播帮助诊断，不代替状态合同。
 
 ## 流式传播有条件
 
-序列能否逐段流式输出，取决于每个组件是否实现可转换的流式接口。中间插入一个只支持完整输入的普通函数，可能让下游必须等它完成后再开始。
+用户想立即看到草稿，而资料检索可能必须一次性返回一个完整结果集。序列的增量能力取决于每一段能否消费和产出增量，不能只检查最前面的模型是否启用了 streaming。
 
-因此遇到“模型支持 streaming，但页面仍最后一次性出现”时，应逐段检查：
-
-1. 模型是否真的产出 chunk；
-2. parser 是否等待完整消息；
-3. RunnableLambda 是否缓存全部输入；
-4. 应用是否消费了正确的 stream mode；
-5. 网络代理是否缓冲响应。
+排查时可记录各段首次产出的时间：provider 首个 chunk、解析器首个结果、应用首个事件、浏览器首次显示。若模型已经逐步产出而解析器最后才返回，网络层没有问题；若应用已发事件但浏览器等待整包，再查代理缓冲和客户端消费方式。
 
 ### 一个缓冲步骤会怎样改变流式体验
 
-假设模型逐字输出，后面的 parser 却需要完整 JSON 才能解析。整体链会等到对象结束，用户看到的便不是逐字结果。流式能力需要每个步骤支持增量转换；一个只处理完整输入的函数就可能成为缓冲边界。
+模型逐步生成一个申请 JSON，解析器要求整个对象通过 schema 校验才返回。把它接入链之后，最终对象自然在末尾出现。这种等待适合预算、批准状态等需要完整校验的数据，不必为了逐字显示强行执行未闭合对象。
 
-这不一定是缺陷。审批结果或工具参数本来就需要完整校验才能执行。设计时区分哪些增量仅用于展示、哪些结果必须原子地形成，不要为页面更快而提前执行半个对象。
+页面可以另外展示模型文字或进度事件，同时把结构化结果视为原子终态。不要将展示通道的“正在填参数”误当成工具可以执行的信号。选择哪个边界缓冲，是产品协议的一部分。
 
 ## 重试放在最小的不稳定边界
 
+以下为依赖 `prompt`、`model`、`parser` 已由应用构造的组合片段：
+
 ```python
-model_step = model.with_retry(stop_after_attempt=3)
-chain = prompt | model_step | parser
+limited_model = model.with_retry(stop_after_attempt=2)
+proposal_chain = prompt | limited_model | parser
 ```
 
-如果只模型调用可能遇到限流，就只重试模型。把整条链重试会再次执行前面的检索甚至外部副作用。重试范围越大，幂等要求越高。
+它只重复模型调用，不会重复前面的资料准备。如果失败来自解析器，这个包装未必会触发重新生成；应按具体故障选范围，不能把所有失败都归为网络重试。
 
-同理，图节点级 retry policy 应包住可安全重放的工作单元，而不是整个业务流程。
+重试也要计入调用预算。一次逻辑模型步骤尝试两次，trace 中的真实请求和费用都可能增加。外层再设图节点重试时，必须计算嵌套上限，避免每层看起来都很小，组合后实际放大许多倍。
 
 ## Runnable 与 LangGraph 的连接
 
-LangGraph 节点可以是普通 callable 或 Runnable。编译后的图本身也实现 Runnable，因此可以：
+图节点可以接收普通函数或 Runnable，编译后的图也提供 Runnable 表面。这允许在一个草稿节点里调用 LCEL 链，在外层继续使用 `invoke`、`stream` 等方法驱动整图。
 
-- 在图节点中调用模型 Runnable；
-- 把一段 LCEL chain 作为节点；
-- 从外部用 `invoke`、`stream`、`batch` 调图；
-- 让 callback 和配置穿过两层。
-
-这就是两个项目共享执行表面的关键。LangChain 组件不需要知道自己正处于图的哪个 super-step，LangGraph 也不需要理解节点内部是 prompt 还是数据库查询。
+节点返回值仍须遵守状态图合同。链若产出一个字符串，节点通常要映射为 `{"draft": text}`；不能因为它是 Runnable，就自动变成正确的 partial update。callback 和配置可以贯穿两层，业务字段怎样合并仍由图 schema 决定。
 
 ## 何时用 LCEL，何时用图
 
-用 LCEL 表示无环的数据变换，特别是“输入经过一串组件得到输出”。出现以下情况时转向图：
+查询标签规范化、文档拼接和固定解析，可以留在一个无环组合里。需要拒绝后回到修订、保存中间状态、等待值班员确认，或分别恢复失败专家时，状态图能把这些依赖表达出来。
 
-- 需要循环或条件分支；
-- 需要持久化中间状态；
-- 需要人工中断和恢复；
-- 多个节点共同更新显式业务状态；
-- 需要从特定步骤重放或查看历史。
-
-不要为了画图把三步纯转换拆成三十个节点，也不要用嵌套 RunnableBranch 隐藏一个本来应显式展示的业务状态机。
+粒度不必与每个函数一一对应。一个节点内部包含几次可安全重放的纯变换通常没有问题；若某段工作值得独立重试或恢复，再拆成节点。这样既能保留组件组合的简洁，也不把重要业务阶段藏进深层 lambda。
 
 ### 重试整条链，为什么可能重复已经成功的工作
 
-检索成功、模型超时，若重试最外层链，检索也重新运行；前一步若是扣款，风险更高。将重试包在最小故障单元，可减少重复费用与副作用，但前后结果仍要有清晰输入输出。Runnable 的重试包装不自动推断哪些操作安全。
+设查询资料成功后模型超时。重试外层整链会再查一次；资料服务收费或结果会变时，第二次并不等价于沿用第一次观察。若前面还执行了窗口预留，重复调用会成为副作用风险。
 
-当流程需要保存中间结果、等待人工决定或回到修订步骤时，用图表达这些边界更直观；固定的文本变换组合仍适合 LCEL。不必为了统一外观，把可靠性需求藏进一个复杂 lambda。
+可以将已确认资料存入状态，再只重试生成步骤，或者把最不稳定的调用独立包装。Runnable 不会分析函数副作用来自动选最安全的范围，范围需要根据故障和恢复需求确定。用一个计数器记录测试中各组件执行次数，便能看出重试到底重复了什么。
 
 ## 源码入口
 
-- `langchain_core/runnables/base.py`
-- `langchain_core/runnables/config.py`
-- `langchain_core/runnables/retry.py`
-- `langgraph/_internal/_runnable.py`
+- `langchain_core/runnables/base.py`：从序列和并行组合的调用方法追输入形状。
+- `langchain_core/runnables/config.py`：检查配置合并与子调用传播。
+- `langchain_core/runnables/retry.py`：核对尝试次数和捕获条件。
+- `langgraph/_internal/_runnable.py`：查看图如何适配 callable 与 Runnable。
+
+可以先运行申请标签的小例子，再替换其中一支为故意抛错的函数，观察异常与重试边界，而不必接真实模型。

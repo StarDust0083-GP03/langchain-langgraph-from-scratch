@@ -1,124 +1,114 @@
 # 消息是运行时协议，不是聊天字符串
 
-把消息理解成 `role + content` 只够完成第一次模型调用。工具、流式、多模态、结构化输出和状态恢复都需要更完整的协议。
+天文台助手收到两份数值都为 1500 的结果，不代表它们可以互换。一份可能是预算秒数，另一份可能是资料表中的探测器编号。消息需要记录说话者、请求身份、内容类型和附加数据，程序才有依据把观察送往正确位置。
+
+LangChain 的消息对象提供这种结构。文本是其中一部分，空文本也可能承载完整调用；从显示界面上看不到的字段，同样可能影响执行、流式合并和恢复。
 
 ## 常见消息类型
 
-| 类型 | 发送者 | 关键字段 |
+| 对象 | 在申请助手中的用途 | 不能据此推断的事 |
 | --- | --- | --- |
-| `SystemMessage` | 应用 | 行为约束、稳定背景 |
-| `HumanMessage` | 用户 | 文本或多模态输入 |
-| `AIMessage` | 模型 | 文本、`tool_calls`、usage、响应元数据 |
-| `ToolMessage` | 工具执行层 | `tool_call_id`、结果、可选 artifact |
-| `AIMessageChunk` | 流式模型 | 可合并的增量内容与调用参数片段 |
+| `SystemMessage` | 设置可引用范围与输出要求 | 无法替代工具授权 |
+| `HumanMessage` | 承载申请人的研究问题 | 不证明自述身份可信 |
+| `AIMessage` | 生成建议或 `tool_calls` | 不证明请求已执行 |
+| `ToolMessage` | 送回预算与资料观察 | 不保证外部材料真实 |
+| `AIMessageChunk` | 增量展示生成过程 | 不保证当前参数已完整 |
 
-`AIMessage` 是模型响应的标准容器，不代表内容一定是自然语言。一个只包含工具请求的响应，其 `content` 可以为空。
+同一个对象还可能带响应元数据和 token 用量。应用可以用这些字段做诊断，但业务结论应有明确来源，不能用模型响应中的自信语气代替资料证据。
 
 ### 同一句文字放进不同消息，会改变含义
 
-“检查数据库迁移”作为 HumanMessage 是用户要求，作为 ToolMessage 是工具返回的观察，作为 AIMessage 则是模型陈述。把它们全拼成没有角色的字符串，模型和执行器就失去了来源边界。消息类型帮助保持协议身份，但它不会认证文字真假，工具读取到的外部文档仍可能不可信。
+“窗口为 1800 秒”若来自用户，是待核对的输入；若来自排班工具，是一项外部观察；若来自模型，是它生成的陈述。把它们拼成一段无角色文本后，后续节点便难以判断应优先信任哪项信息。
 
-空 content 的 AIMessage 也不应丢弃。它可能完整携带一个工具请求，删掉它以后只留下 ToolMessage，下一轮就没有对应的请求。处理历史时要看对象字段，而非用“文本为空”判断消息无用。
+资料中还可能出现“请立即批准”的句子。即便这段内容由工具读回，也只是资料内容，不能提升为系统命令。保留 `ToolMessage` 的来源边界有助于隔离它，但最终仍需应用选择如何使用这些文字。
 
 ## 内容块与元数据
 
-不同供应商对图片、音频、推理内容和文件的表示不同。LangChain 消息允许标准内容块，也保留 provider 原生内容。应用代码应优先读取标准字段，只在确实需要某个供应商特性时访问 `additional_kwargs` 或响应元数据。
+观测研究可能同时使用文字规则和仪器图像。provider 对图像 URL、文件引用和音频的表示不同，消息的标准内容块用于减少业务与原生格式的耦合。不能假定每条 `content` 都是可以直接 `.strip()` 的字符串。
 
-一个稳妥的边界是：
+建议在进入草稿节点前做一次适配：提取允许的文本与图像引用，保留必要来源，其他 provider 特有数据留给观测层。遇到必须读取 `additional_kwargs` 的能力，把判断集中到适配函数，并用目标 provider 的小型合同测试固定行为。
 
-- 业务逻辑读取标准消息与标准 content block；
-- 观测层记录 usage 和 provider metadata；
-- 适配层处理供应商特有字段。
-
-这样更换模型时，变化集中在适配层，而不是散落在每个节点里。
+usage 适合计费统计，响应 ID 适合排障；它们不会让 `total_s` 自动成为业务字段。业务预算来自工具或领域计算，模型 token 成本来自元数据，两类单位应分别记录。
 
 ## 工具调用必须闭环
 
-一次工具请求包含名称、参数和调用 ID。执行结果必须以 `ToolMessage` 返回，并携带同一个 ID。
+以下代码可在安装 `langchain-core` 后运行，构造一次资料查询的请求与结果：
 
 ```python
 from langchain_core.messages import AIMessage, ToolMessage
 
-request = AIMessage(
-    content="",
-    tool_calls=[{
-        "name": "search_notes",
-        "args": {"query": "LangGraph persistence"},
-        "id": "call-7",
-        "type": "tool_call",
-    }],
+request = AIMessage(content="", tool_calls=[{
+    "name": "lookup_observatory_rule",
+    "args": {"rule_id": "SIM-TIME-4"},
+    "id": "timing-rule-request",
+    "type": "tool_call",
+}])
+observation = ToolMessage(
+    content="教学记录 r1：逐帧读出 20 秒，固定校准 300 秒。",
+    tool_call_id=request.tool_calls[0]["id"],
 )
-
-result = ToolMessage(
-    content="checkpointer is thread-scoped",
-    tool_call_id="call-7",
-)
+assert observation.tool_call_id == "timing-rule-request"
 ```
 
-在支持并行工具调用的模型中，一个 `AIMessage` 后面可能需要多条 `ToolMessage`。遗漏结果、ID 错配或顺序不符合 provider 要求，都会在下一次模型调用时失败。
+这段代码只创建协议对象，不执行检索。执行器应为本轮每个请求生成匹配观察，包括可恢复的失败。丢弃空 `content` 的 `request` 会让剩下的工具消息失去前置请求，实际 provider 可能据此拒绝下一轮输入。
 
 ### 调用 ID 为什么比工具名称更重要
 
-假设同一轮分别搜索“检查点”和“长期记忆”，两次都调用 search_notes。返回文本只标工具名，无法确定哪份对应哪个问题；调用 ID 把每个结果配到具体参数。超时重试时也要保持结果与请求身份清楚，不把旧尝试的结果填给新调用。
+比较 6 帧与 8 帧方案时，模型可在一轮中请求两次 `estimate_time`。对应结果分别为 1500 秒和 1900 秒；用工具名作字典键会覆盖一项，而两个不同调用 ID 可以保留两份参数关系。
 
-删减历史需要以闭环为单位。保留工具请求却删掉结果，或保留结果却删掉请求，都可能违反 provider 的消息合同。摘要可以压缩较早经历，但保留在当前工具交互中的请求和结果应完整配对。
+历史压缩也要维护这个关系。删去请求却保留结果，或者只保留两项结果中的一项，都可能造成未闭合工具轮次。对于仍需送给 provider 的近期消息，以完整交互为单位保留；更早已完成的研究可以变成带引用摘要。
 
 ## artifact 不等于 content
 
-工具有时会返回大对象，例如完整文档、二进制引用或调试信息。模型只需要摘要，应用却需要保留原对象。此时可把给模型看的文本放入 `content`，把下游程序使用的数据放入 `artifact`。
+假设工具读取了 200 行模拟仪器参数，模型只需要其中两个开销值。`content` 可以放校准与读出的摘要，`artifact` 则保存结构化表或外部对象引用，供页面展示和后续程序使用。
 
-这能避免把数 MB 的原始数据反复塞进上下文。需要注意，artifact 仍可能进入状态和 checkpoint，不能因为模型看不到就忽略存储成本。
+模型没有看到 artifact，不意味着它不会进入 checkpoint、日志或调试事件。应优先保留小型版本化引用，避免把整份图像或表格反复写入状态。需要完整留档时，明确外部存储的访问控制与删除策略，不能仅靠消息字段名隐藏数据。
 
 ## 消息 reducer 为什么特殊
 
-普通列表 reducer 常写成 `operator.add`，只会追加。对话消息还需要按 ID 更新、处理删除标记和规范化输入，因此 LangGraph 提供 `add_messages` 与 `MessagesState`。
+普通列表相加只能追加。对话还会修正消息、删除指定消息和规范化不同输入形状，所以 LangGraph 用 `add_messages` 实现按 ID 的合并，`MessagesState` 为 `messages` 配好这个 reducer。
 
 ```python
-from langgraph.graph import MessagesState
+from langchain_core.messages import AIMessage
+from langgraph.graph.message import add_messages
 
-class State(MessagesState):
-    user_id: str
+old = [AIMessage(id="budget-summary", content="预算待计算")]
+new = add_messages(old, [AIMessage(id="budget-summary", content="模拟预算 1500 秒")])
+assert len(new) == 1
+assert new[0].content == "模拟预算 1500 秒"
 ```
 
-节点只返回本次新增或修正的消息，reducer 负责合并。不要每次都返回整段历史，否则可能重复追加，也会让并行写入语义变得含糊。
+稳定 ID 使这次返回表示修正。如果节点返回整份历史，新的无 ID 消息可能再次被分配身份，形成重复项。明确是修改已有消息还是追加观察，比把所有节点返回值统一做列表相加更重要。
 
 ## 流式 chunk 如何变成最终消息
 
-模型流式返回的通常是 `AIMessageChunk`。工具参数可能被拆成若干字符串片段，只有合并后才是完整 JSON。消费端不应在每个 chunk 上直接执行工具。
+工具参数可能跨多个 chunk 才完整：一个片段含 `{"frames":`，下一个片段含 `6,"exposure_s":`，最后才出现 `180}`。在此之前，没有可验证的完整调用。
 
-```text
-chunk 1: name=search, args='{"que'
-chunk 2:                args='ry":"la'
-chunk 3:                args='nggraph"}'
-                    ↓ 合并
-AIMessage(tool_calls=[完整调用])
-```
+| 接收时点 | 可以展示什么 | 可以执行什么 |
+| --- | --- | --- |
+| 获得工具名片段 | 正在准备预算计算 | 暂不执行 |
+| 收到部分参数 | 可选的诊断预览 | 仍不执行 |
+| 合并成最终调用 | 展示完整帧数和单位 | 校验与授权后执行 |
 
-框架会处理常见合并，但自定义事件转发层仍要区分“展示增量”和“可执行的最终对象”。
+通常由框架负责 `AIMessageChunk` 合并，自定义转发层仍需区分增量和终态。不能把每个看起来可解析的局部 JSON 都运行一次；参数也可能尚未到齐或被后续片段补全。
 
 ## 上下文不是越长越好
 
-把全部历史消息原样交给模型，会带来费用、延迟和注意力稀释。更合理的状态可以同时保存：
+第十轮修改申请时，模型通常需要当前问题、最新规则、现行草稿和未解决意见，不需要每一次工具重试的完整堆栈。状态可以保存恢复所需数据，模型请求则由当前步骤选择一个较窄视图。
 
-- 最近若干轮原始消息；
-- 更早历史的摘要；
-- 从 store 检索出的用户偏好；
-- 当前任务需要的文档片段；
-- 不发给模型但用于审计的运行元数据。
-
-上下文工程的重点是按当前步骤选择信息，而不是让一个 `messages` 列表无限增长。
+可把旧研究压成“规则 r1、计算条件、未核验事项”的摘要，保留最近完整消息交互；跨申请偏好从 store 按需检索。原始记录、模型上下文和用户事件分别有生命周期，不能用一个无限增长的 `messages` 同时承担所有任务。
 
 ### 用消息 ID 区分修正与新增
 
-消息 reducer 可以按身份合并修改，普通列表相加则把两份内容都留下。修订草稿如果是替换同一条消息，保留稳定 ID 有助于表达更新；如果是新一轮观察，就应成为新消息。不要把不同经历随意赋成相同 ID，否则正确历史可能被覆盖。
+草稿摘要从“待算”变为“1500 秒”，适合修正同一 ID；之后新增天气观察，应使用新 ID。若为方便总给所有 `AIMessage` 同一编号，`add_messages` 会覆盖先前消息，资料链可能被无声缩短。
 
-同样，状态里保存了 artifact，不意味着它会发给模型；但事件流或 checkpoint 导出可能仍包含它。设计消息时同时标明模型可见、客户端可见和恢复需要三个范围，避免将“不在 content 中”误读成“不含敏感数据”。
+检查上下文治理时，可以统计 ID 是否唯一、工具请求是否闭合、摘要能否追到规则版本。还应测试 artifact 不出现在模型请求中，以及其是否仍出现在其他出口。不同可见范围需要不同断言，单看页面文字不足以确认数据安全。
 
 ## 源码入口
 
-- `langchain_core/messages/base.py`：消息公共字段与序列化。
-- `langchain_core/messages/ai.py`：`AIMessage`、工具调用和 chunk。
-- `langchain_core/messages/tool.py`：工具结果。
-- `langgraph/graph/message.py`：`add_messages` 与 `MessagesState`。
+- `langchain_core/messages/base.py`：检查内容、公共字段及序列化边界。
+- `langchain_core/messages/ai.py`：从最终调用与 chunk 合并代码核对执行时机。
+- `langchain_core/messages/tool.py`：定位结果 ID 和 artifact 的定义。
+- `langgraph/graph/message.py`：用同 ID、不同 ID、删除消息三种输入观察合并结果。
 
-下一章继续沿着消息中的 `tool_calls`，看它如何变成一次受控执行。
+这些路径相对于归档仓库中的包目录。阅读时先找对象字段，再跟转换函数，避免把某个 provider 的原生消息结构当成通用合同。

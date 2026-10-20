@@ -23,7 +23,7 @@ const items = [...chapterMatches, ...appendixMatches].map((m, i) => ({
   label: i < chapterMatches.length ? String(i).padStart(2, '0') : String.fromCharCode(65 + i - chapterMatches.length),
   appendix: i >= chapterMatches.length,
 }));
-if (items.length !== 18) throw new Error(`Expected 18 chapters, found ${items.length}`);
+if (items.length !== 20) throw new Error(`Expected 20 chapters, found ${items.length}`);
 
 const escapeHtml = (s) => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const plain = (md) => md
@@ -106,7 +106,7 @@ const descriptions = {
   '08-control-flow':'条件边、Command、Send 与循环', '09-pregel':'Plan、Execution、Update 三阶段',
   '10-persistence':'Checkpoint 与 Store 的生命周期', '11-interrupts':'暂停、恢复、重放与人工审批',
   '12-streaming':'消息、更新、状态与事件流', '13-subgraphs':'上下文隔离与多 Agent 模式',
-  '14-project':'可运行的离线研究助手', '15-production':'测试、升级与故障定位',
+  '14-project':'观测申请的研究、修订与审批', '15-production':'测试、升级与故障定位',
   'appendix-glossary':'术语、模板与故障速查', 'appendix-sources':'官方材料、快照与原创说明'
 };
 
@@ -120,8 +120,8 @@ for (let i = 0; i < records.length; i++) {
 
 const chapterRows = records.map(r => `<a class="chapter-row" href="${r.href}"><span class="chapter-no">${r.label}</span><span><h3>${escapeHtml(r.title)}</h3><p>${escapeHtml(descriptions[r.slug] || r.description)}</p></span><span class="arrow">→</span></a>`).join('');
 const home = `<main id="main">
-<section class="hero"><div><p class="kicker">Source guided field book</p><h1>从工具调用到<br><em>可恢复 Agent</em></h1><p class="dek">穿过 LangChain 的组件协议与 LangGraph 的状态运行时，读懂一条 Agent 从消息、工具、图执行到持久化恢复的完整路径。</p></div>
-<aside class="hero-aside"><strong>不是 API 清单</strong>以可运行的本地研究助手贯穿消息协议、工具循环、StateGraph、Pregel、checkpoint 与 interrupt。<dl class="snapshot"><dt>LC</dt><dd>877ad8c7bfa3</dd><dt>LG</dt><dd>1afaca35a0d4</dd><dt>DATE</dt><dd>2026-09-22</dd></dl></aside></section>
+<section class="hero"><div><p class="kicker">Source guided field book</p><h1>从工具调用到<br><em>可恢复 Agent</em></h1><p class="dek">跟踪一份天文台申请如何读取资料、计算观测预算、等待审核并完成修订。沿状态与消息核对组件协议、图执行和恢复边界。</p></div>
+<aside class="hero-aside"><strong>用执行结果核验理解</strong>章节顺序保持不变，正文、图表和两个示例程序重新编写。离线轨迹演示控制流，不冒充真实模型或望远镜测试。<dl class="snapshot"><dt>LC</dt><dd>877ad8c7bfa3</dd><dt>LG</dt><dd>1afaca35a0d4</dd><dt>DATE</dt><dd>2026-09-22</dd></dl></aside></section>
 <section class="home-grid"><aside class="home-intro"><h2>全书 16 章 + 2 附录</h2><p>先从无框架循环建立直觉，再下沉到运行时，最后用工程检查表收束。</p><a href="chapters/00-preface.html">开始阅读 →</a><br><a href="search.html">全文搜索 →</a></aside><div class="contents">${chapterRows}</div></section></main>`;
 fs.writeFileSync(path.join(here, 'index.html'), shell({title:'目录', body:home}));
 
