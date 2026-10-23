@@ -83,6 +83,16 @@ class EvidenceState(TypedDict):
 </tr>
 </tbody></table></div>
 <p>这三种行为来自更新合同，与检索结果是否正确是两个问题。测试除了看文本，还应断言来源集合和数量。</p>
+<figure class="concept-diagram" tabindex="0" data-review-figure="lg-reducer">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 396" role="img" aria-labelledby="lg-reducer-title lg-reducer-desc" style="display:block;width:100%;min-width:620px;height:auto">
+<title id="lg-reducer-title">追加 reducer：节点只返回增量</title>
+<desc id="lg-reducer-desc">旧状态：notes = [SIM-REQUEST-1]；两个支路的增量：[SIM-FILTER-2] 与 [SIM-TIME-4]；合并后的状态：3 条来源；不要再返回各自的旧列表。若两个支路都返回旧列表加新记录，最终会得到 5 条。</desc>
+<rect width="960" height="396" fill="var(--paper,#faf8f1)"/>
+<g font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif"><text x="40" y="48" font-size="28" fill="var(--ink,#243b48)" text-anchor="start">追加 reducer：节点只返回增量</text><path d="M176 144 L176 164" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 157 L176 164 L181 157" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="88" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">旧状态</text><text x="344" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">notes = [SIM-REQUEST-1]</text><path d="M176 224 L176 244" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 237 L176 244 L181 237" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="168" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">两个支路的增量</text><text x="344" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">[SIM-FILTER-2] 与 [SIM-TIME-4]</text><rect x="40" y="248" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#e5ede9))" stroke="var(--forest,var(--accent,#29564c))"/><text x="56" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">合并后的状态</text><text x="344" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">3 条来源；不要再返回各自的旧列表</text><path d="M40 332H920" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="40" y="368" font-size="18" fill="var(--muted,#536772)" text-anchor="start">若两个支路都返回旧列表加新记录，最终会得到 5 条。</text></g>
+</svg>
+<figcaption>图：若两个支路都返回旧列表加新记录，最终会得到 5 条。</figcaption>
+</figure>
+
 <h2 id="node-只是函数-但签名有层次">Node 只是函数，但签名有层次<a class="anchor" href="#node-只是函数-但签名有层次" aria-label="链接到本节">#</a></h2>
 <p>节点最少接收 state，返回字典增量。需要业务身份或连接时可接收 <code>Runtime[Context]</code>，需要运行配置时使用 Runnable config。依赖从签名中可见，测试便能提供固定上下文，而不必修改全局变量。</p>
 <p>节点粒度可以按恢复成本判断。数值格式化不值得单独保存，外部资料查询可能值得独立重试，生成草稿与等待批准则应分开。节点越粗，失败后重复工作越多；越细，schema、调度和版本兼容的维护面越大。</p>

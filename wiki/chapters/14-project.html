@@ -88,6 +88,16 @@ class ResearchState(TypedDict, total=False):
 </tr>
 </tbody></table></div>
 <p><code>review</code> 使用 <code>Command</code>，因此没有通往 publish 的无条件固定边。若误加这条边，拒绝也可能调度发布，测试必须检查这项负面行为。</p>
+<figure class="concept-diagram" tabindex="0" data-review-figure="lg-revision-trace">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 396" role="img" aria-labelledby="lg-revision-trace-title lg-revision-trace-desc" style="display:block;width:100%;min-width:620px;height:auto">
+<title id="lg-revision-trace-title">拒绝 v1 后修订，批准 v2 后本地发布</title>
+<desc id="lg-revision-trace-desc">首次暂停：v1：2 条资料，1500 秒，receipt 为空；拒绝 v1 → 修订 v2：不重复检索，notes 仍为 2 条；批准当前 v2：生成 local:SIM-OBS-17:v2。这是正常修订轨迹；无资料、超预算、三次拒绝会取消。</desc>
+<rect width="960" height="396" fill="var(--paper,#faf8f1)"/>
+<g font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif"><text x="40" y="48" font-size="28" fill="var(--ink,#243b48)" text-anchor="start">拒绝 v1 后修订，批准 v2 后本地发布</text><path d="M176 144 L176 164" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 157 L176 164 L181 157" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="88" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">首次暂停：v1</text><text x="344" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">2 条资料，1500 秒，receipt 为空</text><path d="M176 224 L176 244" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 237 L176 244 L181 237" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="168" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">拒绝 v1 → 修订 v2</text><text x="344" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">不重复检索，notes 仍为 2 条</text><rect x="40" y="248" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#e5ede9))" stroke="var(--forest,var(--accent,#29564c))"/><text x="56" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">批准当前 v2</text><text x="344" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">生成 local:SIM-OBS-17:v2</text><path d="M40 332H920" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="40" y="368" font-size="18" fill="var(--muted,#536772)" text-anchor="start">这是正常修订轨迹；无资料、超预算、三次拒绝会取消。</text></g>
+</svg>
+<figcaption>图：这是正常修订轨迹；无资料、超预算、三次拒绝会取消。</figcaption>
+</figure>
+
 <h2 id="为什么计划和检索分开">为什么计划和检索分开<a class="anchor" href="#为什么计划和检索分开" aria-label="链接到本节">#</a></h2>
 <p>计划节点选择 <code>filter</code> 与 <code>timing</code> 两个研究项，检索节点只按这些项读取 fixture。尽管代码很短，它们代表不同合同：计划决定研究范围，检索提供实际观察。换成模型或远程资料库后，两者会有不同的错误与重试政策。</p>
 <p>本例只在问题包含 Halpha 时生成研究项，未知问题得到空计划，不使用万能默认资料。这样无命中分支可直接验证，也不会把与问题无关的内容包装成研究成功。</p>

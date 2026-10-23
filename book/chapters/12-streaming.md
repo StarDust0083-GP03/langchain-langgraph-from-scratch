@@ -42,6 +42,16 @@ LangGraph 可输出消息增量、状态更新、完整值或自定义进度。�
 
 这张表拆开体验与确认时点。具体事件先后仍受实现和配置影响，不是对数据库提交顺序的统一保证。客户端应按事件类型处理，不能从任意文字推断完成。
 
+<figure class="concept-diagram" tabindex="0" data-review-figure="lg-stream-modes">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 476" role="img" aria-labelledby="lg-stream-modes-title lg-stream-modes-desc" style="display:block;width:100%;min-width:620px;height:auto">
+<title id="lg-stream-modes-title">四种流事件，四种客户端动作</title>
+<desc id="lg-stream-modes-desc">messages：显示允许的文本增量，工具片段另处理；updates：合并节点局部变化，例如 total_s=1500；values：替换当前快照，不向草稿末尾追加；custom：展示瞬时进度，不据此认定审批完成。这里按事件类型分类，不表示四种事件的统一发送顺序。</desc>
+<rect width="960" height="476" fill="var(--paper,#faf8f1)"/>
+<g font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif"><text x="40" y="48" font-size="28" fill="var(--ink,#243b48)" text-anchor="start">四种流事件，四种客户端动作</text><rect x="40" y="88" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">messages</text><text x="344" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">显示允许的文本增量，工具片段另处理</text><rect x="40" y="168" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">updates</text><text x="344" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">合并节点局部变化，例如 total_s=1500</text><rect x="40" y="248" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">values</text><text x="344" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">替换当前快照，不向草稿末尾追加</text><rect x="40" y="328" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#e5ede9))" stroke="var(--forest,var(--accent,#29564c))"/><text x="56" y="363" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">custom</text><text x="344" y="363" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">展示瞬时进度，不据此认定审批完成</text><path d="M40 412H920" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="40" y="448" font-size="18" fill="var(--muted,#536772)" text-anchor="start">这里按事件类型分类，不表示四种事件的统一发送顺序。</text></g>
+</svg>
+<figcaption>图：这里按事件类型分类，不表示四种事件的统一发送顺序。</figcaption>
+</figure>
+
 ## stream mode 是数据合同
 
 下面为已构造 graph 后的调用片段：
