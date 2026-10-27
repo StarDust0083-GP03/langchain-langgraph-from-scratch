@@ -17,7 +17,7 @@
     <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
   </nav>
 </header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 15</div><div class="rail-title">生产检查表与源码阅读路线</div><ol><li><a href="#上线前检查表">上线前检查表</a></li><li><a href="#四类测试">四类测试</a></li><li><a href="#升级策略">升级策略</a></li><li><a href="#源码阅读路线">源码阅读路线</a></li><li><a href="#避免低效阅读">避免低效阅读</a></li><li><a href="#最终心智模型">最终心智模型</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 15 章</div><h1>生产检查表与源码阅读路线</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 16 分钟</div></header><div class="prose"><p>离线申请能走到本地回执，只说明特定输入下控制流成立。真实系统还要面对排班变化、请求重复、进程退出和旧任务恢复。上线判断应有失败输入与可重复验证，不能由一次顺利演示代替。</p>
-<p>本章把这些验证绑定到观测申请对象，再给出追踪源码的方法。检查表的用途是找到缺少的证据，不是让每一项都停留在“已考虑”。</p>
+<p>本章把这些验证绑定到观测申请对象，再给出追踪源码的方法。逐项填写失败输入、预期结果和已有测试，空白处就是还缺的证据。</p>
 <h2 id="上线前检查表">上线前检查表<a class="anchor" href="#上线前检查表" aria-label="链接到本节">#</a></h2>
 <h3 id="状态">状态<a class="anchor" href="#状态" aria-label="链接到本节">#</a></h3>
 <p>为 <code>total_s</code> 固定单位和公式版本，为 <code>notes</code> 固定来源身份与去重规则，为 <code>draft</code> 和 <code>revision</code> 固定覆盖关系。并行节点的写入集合应可列出，冲突字段有明确聚合节点或 reducer。</p>
