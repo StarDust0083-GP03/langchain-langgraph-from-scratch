@@ -120,12 +120,12 @@ for (let i = 0; i < records.length; i++) {
 
 const chapterRows = records.map(r => `<a class="chapter-row" href="${r.href}"><span class="chapter-no">${r.label}</span><span><h3>${escapeHtml(r.title)}</h3><p>${escapeHtml(descriptions[r.slug] || r.description)}</p></span><span class="arrow">→</span></a>`).join('');
 const home = `<main id="main">
-<section class="hero"><div><p class="kicker">Source guided field book</p><h1>从工具调用到<br><em>可恢复 Agent</em></h1><p class="dek">跟踪一份天文台申请如何读取资料、计算观测预算、等待审核并完成修订。沿状态与消息核对组件协议、图执行和恢复边界。</p></div>
-<aside class="hero-aside"><strong>用执行结果核验理解</strong>章节顺序保持不变，正文、图表和两个示例程序重新编写。离线轨迹演示控制流，不冒充真实模型或望远镜测试。<dl class="snapshot"><dt>LC</dt><dd>877ad8c7bfa3</dd><dt>LG</dt><dd>1afaca35a0d4</dd><dt>DATE</dt><dd>2026-09-22</dd></dl></aside></section>
+<section class="hero"><div><p class="kicker">按源码核对执行</p><h1>从工具调用到<br><em>可恢复 Agent</em></h1><p class="dek">跟踪一份天文台申请如何读取资料、计算观测预算、等待审核并完成修订。沿状态与消息核对组件协议、图执行和恢复边界。</p></div>
+<aside class="hero-aside"><strong>用执行结果核验理解</strong>章节顺序保持不变，正文、图表和两个示例程序重新编写。离线轨迹演示控制流，不冒充真实模型或望远镜测试。<dl class="snapshot"><dt>LangChain 提交</dt><dd>877ad8c7bfa3</dd><dt>LangGraph 提交</dt><dd>1afaca35a0d4</dd><dt>快照日期</dt><dd>2026-09-22</dd></dl></aside></section>
 <section class="home-grid"><aside class="home-intro"><h2>全书 18 章 + 2 附录</h2><p>先从无框架循环建立直觉，再下沉到运行时，最后用工程检查表收束。</p><a href="chapters/00-preface.html">开始阅读 →</a><br><a href="search.html">全文搜索 →</a></aside><div class="contents">${chapterRows}</div></section></main>`;
 fs.writeFileSync(path.join(here, 'index.html'), shell({title:'目录', body:home}));
 
-const searchBody = `<main id="main" class="search-page"><p class="kicker">Full text index</p><h1>查一个概念，<br>回到执行路径。</h1><label for="search" class="skip">搜索全书</label><input id="search" class="search-input" type="search" autocomplete="off" placeholder="reducer / interrupt / 工具权限"><section id="results" aria-live="polite"><p class="search-hint">输入 API、概念或错误现象，例如 reducer、interrupt、重复副作用。</p></section></main>`;
+const searchBody = `<main id="main" class="search-page"><p class="kicker">全书搜索</p><h1>查一个概念，<br>回到执行路径。</h1><label for="search" class="skip">搜索全书</label><input id="search" class="search-input" type="search" autocomplete="off" placeholder="reducer / interrupt / 工具权限"><section id="results" aria-live="polite"><p class="search-hint">输入 API、概念或错误现象，例如 reducer、interrupt、重复副作用。</p></section></main>`;
 const searchIndex = records.map(r => ({number:r.label,title:r.title,href:r.href,text:r.text}));
 fs.writeFileSync(path.join(assetsDir, 'search-index.json'), JSON.stringify(searchIndex, null, 2));
 fs.writeFileSync(path.join(assetsDir, 'search-index.js'), `window.BOOK_SEARCH=${JSON.stringify(searchIndex)};\n`);

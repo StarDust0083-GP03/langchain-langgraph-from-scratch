@@ -4,32 +4,32 @@
 
 本章不要求直接写底层 actor。目标是能解释一次并行执行的可见性，以及失败后为何不能把 Python 调用栈当作恢复依据。
 
-## Bulk Synchronous Parallel
+## 整体同步并行（Bulk Synchronous Parallel）
 
 BSP 将运行分成同步步骤。用教学申请画出两个步骤的状态截面：
 
 | 时间截面 | 规则任务 | 时间任务 | 全局可见状态 |
 | --- | --- | --- | --- |
-| 步骤 k 计划后 | 等待执行 | 等待执行 | 两项结果均未知 |
+| 步骤 k 规划后 | 等待执行 | 等待执行 | 两项结果均未知 |
 | 步骤 k 执行中 | 已产生规则结果 | 仍计算预算 | 仍是步骤 k 的输入快照 |
 | 步骤 k 更新后 | 写入已合并 | 写入已合并 | 规则 r1，预算 1500 秒 |
 | 步骤 k+1 | 聚合任务读取结果 | 无需重算 | 可以形成待审草稿 |
 
 表中的快慢是教学推演，不是性能实测。关键是规则任务提前完成不改变本步其他任务读取的快照。
 
-### Plan
+### 规划（Plan）
 
-计划阶段依据输入和 channel 的版本、触发关系准备可运行任务。节点存在于图里不代表每次都执行，未被激活的审核或取消节点不会自动运行。
+规划阶段依据输入和 channel 的版本、触发关系准备可运行任务。节点存在于图里不代表每次都执行，未被激活的审核或取消节点不会自动运行。
 
 排查“节点没跑”时，先看前一步触发了什么和当前 `next`，而不是直接怀疑执行器漏调函数。输入、普通边和动态发送都可能产生任务，但路径需要符合编译后的触发机制。
 
-### Execution
+### 执行（Execution）
 
 选中的任务运行，并把结果作为待应用写入记录下来。执行可能涉及同步、异步或并发，某项失败或超时会影响本步推进。运行时不会让其他同一步任务读取这项任务尚未合并的更新。
 
 节点若直接改外部数据库，外部系统仍可能立即可见；BSP 的隔离针对图 channel，不是所有外部资源。这也是不能用并行 state 语义推断外部事务的原因。
 
-### Update
+### 更新（Update）
 
 执行结果按 channel 规则合并，形成后续可见值并影响下一批任务。默认单值字段遇到多写入可能报错，加法累计字段则按 reducer 处理。
 
@@ -38,9 +38,9 @@ BSP 将运行分成同步步骤。用教学申请画出两个步骤的状态截�
 <figure class="concept-diagram" tabindex="0" data-review-figure="lg-superstep">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 476" role="img" aria-labelledby="lg-superstep-title lg-superstep-desc" style="display:block;width:100%;min-width:620px;height:auto">
 <title id="lg-superstep-title">同一步读旧快照，下一步读合并结果</title>
-<desc id="lg-superstep-desc">Plan：步骤 k：规则与预算两个任务均被激活；Execution：规则先完成，预算仍读本步输入；Update：合并规则 r1 与预算 1500 秒；Plan：步骤 k+1：聚合节点开始读取两项结果。隔离针对图 channel，不代表外部数据库也具备同一步隔离。</desc>
+<desc id="lg-superstep-desc">规划：步骤 k：规则与预算两个任务均被激活；执行：规则先完成，预算仍读本步输入；更新：合并规则 r1 与预算 1500 秒；规划：步骤 k+1：聚合节点开始读取两项结果。隔离针对图 channel，不代表外部数据库也具备同一步隔离。</desc>
 <rect width="960" height="476" fill="var(--paper,#faf8f1)"/>
-<g font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif"><text x="40" y="48" font-size="28" fill="var(--ink,#243b48)" text-anchor="start">同一步读旧快照，下一步读合并结果</text><path d="M176 144 L176 164" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 157 L176 164 L181 157" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="88" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">Plan：步骤 k</text><text x="344" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">规则与预算两个任务均被激活</text><path d="M176 224 L176 244" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 237 L176 244 L181 237" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="168" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">Execution</text><text x="344" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">规则先完成，预算仍读本步输入</text><path d="M176 304 L176 324" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 317 L176 324 L181 317" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="248" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">Update</text><text x="344" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">合并规则 r1 与预算 1500 秒</text><rect x="40" y="328" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#e5ede9))" stroke="var(--forest,var(--accent,#29564c))"/><text x="56" y="363" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">Plan：步骤 k+1</text><text x="344" y="363" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">聚合节点开始读取两项结果</text><path d="M40 412H920" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="40" y="448" font-size="18" fill="var(--muted,#536772)" text-anchor="start">隔离针对图 channel，不代表外部数据库也具备同一步隔离。</text></g>
+<g font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif"><text x="40" y="48" font-size="28" fill="var(--ink,#243b48)" text-anchor="start">同一步读旧快照，下一步读合并结果</text><path d="M176 144 L176 164" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 157 L176 164 L181 157" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="88" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">规划：步骤 k</text><text x="344" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">规则与预算两个任务均被激活</text><path d="M176 224 L176 244" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 237 L176 244 L181 237" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="168" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">执行</text><text x="344" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">规则先完成，预算仍读本步输入</text><path d="M176 304 L176 324" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 317 L176 324 L181 317" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="248" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">更新</text><text x="344" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">合并规则 r1 与预算 1500 秒</text><rect x="40" y="328" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#e5ede9))" stroke="var(--forest,var(--accent,#29564c))"/><text x="56" y="363" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">规划：步骤 k+1</text><text x="344" y="363" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">聚合节点开始读取两项结果</text><path d="M40 412H920" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="40" y="448" font-size="18" fill="var(--muted,#536772)" text-anchor="start">隔离针对图 channel，不代表外部数据库也具备同一步隔离。</text></g>
 </svg>
 <figcaption>图：隔离针对图 channel，不代表外部数据库也具备同一步隔离。</figcaption>
 </figure>

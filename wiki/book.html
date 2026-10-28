@@ -1025,7 +1025,7 @@ def fan_out(state):
 <p>用一次批准、一次拒绝和一次预算不足的轨迹比较，会比单看图像更容易发现多余固定边或缺失结束状态。</p>
 </div></section><section class="book-section"><header class="chapter-head"><div class="chapter-number">09</div><h1>Pregel：图在运行时如何前进</h1></header><div class="prose"><p>观测规则检查已经返回，时间检查还在运行。此时最终结论能否读取前者的新结果？答案取决于任务所在的 super-step，而不取决于哪个线程更快。Pregel 用明确的执行和更新边界组织图，StateGraph 则把这些细节包装成状态、节点和边。</p>
 <p>本章不要求直接写底层 actor。目标是能解释一次并行执行的可见性，以及失败后为何不能把 Python 调用栈当作恢复依据。</p>
-<h2 id="09-pregel--bulk-synchronous-parallel">Bulk Synchronous Parallel<a class="anchor" href="#09-pregel--bulk-synchronous-parallel" aria-label="链接到本节">#</a></h2>
+<h2 id="09-pregel--整体同步并行-bulk-synchronous-parallel">整体同步并行（Bulk Synchronous Parallel）<a class="anchor" href="#09-pregel--整体同步并行-bulk-synchronous-parallel" aria-label="链接到本节">#</a></h2>
 <p>BSP 将运行分成同步步骤。用教学申请画出两个步骤的状态截面：</p>
 <div class="table-wrap"><table>
 <thead>
@@ -1037,7 +1037,7 @@ def fan_out(state):
 </tr>
 </thead>
 <tbody><tr>
-<td>步骤 k 计划后</td>
+<td>步骤 k 规划后</td>
 <td>等待执行</td>
 <td>等待执行</td>
 <td>两项结果均未知</td>
@@ -1062,21 +1062,21 @@ def fan_out(state):
 </tr>
 </tbody></table></div>
 <p>表中的快慢是教学推演，不是性能实测。关键是规则任务提前完成不改变本步其他任务读取的快照。</p>
-<h3 id="09-pregel--plan">Plan<a class="anchor" href="#09-pregel--plan" aria-label="链接到本节">#</a></h3>
-<p>计划阶段依据输入和 channel 的版本、触发关系准备可运行任务。节点存在于图里不代表每次都执行，未被激活的审核或取消节点不会自动运行。</p>
+<h3 id="09-pregel--规划-plan">规划（Plan）<a class="anchor" href="#09-pregel--规划-plan" aria-label="链接到本节">#</a></h3>
+<p>规划阶段依据输入和 channel 的版本、触发关系准备可运行任务。节点存在于图里不代表每次都执行，未被激活的审核或取消节点不会自动运行。</p>
 <p>排查“节点没跑”时，先看前一步触发了什么和当前 <code>next</code>，而不是直接怀疑执行器漏调函数。输入、普通边和动态发送都可能产生任务，但路径需要符合编译后的触发机制。</p>
-<h3 id="09-pregel--execution">Execution<a class="anchor" href="#09-pregel--execution" aria-label="链接到本节">#</a></h3>
+<h3 id="09-pregel--执行-execution">执行（Execution）<a class="anchor" href="#09-pregel--执行-execution" aria-label="链接到本节">#</a></h3>
 <p>选中的任务运行，并把结果作为待应用写入记录下来。执行可能涉及同步、异步或并发，某项失败或超时会影响本步推进。运行时不会让其他同一步任务读取这项任务尚未合并的更新。</p>
 <p>节点若直接改外部数据库，外部系统仍可能立即可见；BSP 的隔离针对图 channel，不是所有外部资源。这也是不能用并行 state 语义推断外部事务的原因。</p>
-<h3 id="09-pregel--update">Update<a class="anchor" href="#09-pregel--update" aria-label="链接到本节">#</a></h3>
+<h3 id="09-pregel--更新-update">更新（Update）<a class="anchor" href="#09-pregel--更新-update" aria-label="链接到本节">#</a></h3>
 <p>执行结果按 channel 规则合并，形成后续可见值并影响下一批任务。默认单值字段遇到多写入可能报错，加法累计字段则按 reducer 处理。</p>
 <p>当没有后续可运行工作，运行可结束或处于等待外部恢复的状态。应用要区别终态与暂停：两者都可能令一次请求返回，但暂停 thread 仍有待恢复任务。</p>
 <figure class="concept-diagram" tabindex="0" data-review-figure="lg-superstep">
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 476" role="img" aria-labelledby="09-pregel--lg-superstep-title 09-pregel--lg-superstep-desc" style="display:block;width:100%;min-width:620px;height:auto">
 <title id="09-pregel--lg-superstep-title">同一步读旧快照，下一步读合并结果</title>
-<desc id="09-pregel--lg-superstep-desc">Plan：步骤 k：规则与预算两个任务均被激活；Execution：规则先完成，预算仍读本步输入；Update：合并规则 r1 与预算 1500 秒；Plan：步骤 k+1：聚合节点开始读取两项结果。隔离针对图 channel，不代表外部数据库也具备同一步隔离。</desc>
+<desc id="09-pregel--lg-superstep-desc">规划：步骤 k：规则与预算两个任务均被激活；执行：规则先完成，预算仍读本步输入；更新：合并规则 r1 与预算 1500 秒；规划：步骤 k+1：聚合节点开始读取两项结果。隔离针对图 channel，不代表外部数据库也具备同一步隔离。</desc>
 <rect width="960" height="476" fill="var(--paper,#faf8f1)"/>
-<g font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif"><text x="40" y="48" font-size="28" fill="var(--ink,#243b48)" text-anchor="start">同一步读旧快照，下一步读合并结果</text><path d="M176 144 L176 164" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 157 L176 164 L181 157" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="88" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">Plan：步骤 k</text><text x="344" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">规则与预算两个任务均被激活</text><path d="M176 224 L176 244" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 237 L176 244 L181 237" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="168" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">Execution</text><text x="344" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">规则先完成，预算仍读本步输入</text><path d="M176 304 L176 324" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 317 L176 324 L181 317" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="248" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">Update</text><text x="344" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">合并规则 r1 与预算 1500 秒</text><rect x="40" y="328" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#e5ede9))" stroke="var(--forest,var(--accent,#29564c))"/><text x="56" y="363" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">Plan：步骤 k+1</text><text x="344" y="363" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">聚合节点开始读取两项结果</text><path d="M40 412H920" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="40" y="448" font-size="18" fill="var(--muted,#536772)" text-anchor="start">隔离针对图 channel，不代表外部数据库也具备同一步隔离。</text></g>
+<g font-family="'IBM Plex Sans','Noto Sans CJK SC',system-ui,sans-serif"><text x="40" y="48" font-size="28" fill="var(--ink,#243b48)" text-anchor="start">同一步读旧快照，下一步读合并结果</text><path d="M176 144 L176 164" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 157 L176 164 L181 157" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="88" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">规划：步骤 k</text><text x="344" y="123" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">规则与预算两个任务均被激活</text><path d="M176 224 L176 244" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 237 L176 244 L181 237" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="168" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">执行</text><text x="344" y="203" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">规则先完成，预算仍读本步输入</text><path d="M176 304 L176 324" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><path d="M171 317 L176 324 L181 317" fill="none" stroke="var(--muted,#536772)" stroke-width="2"/><rect x="40" y="248" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#ffffff))" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="56" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">更新</text><text x="344" y="283" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">合并规则 r1 与预算 1500 秒</text><rect x="40" y="328" width="272" height="56" rx="6" fill="var(--paper-2,var(--paper-deep,#e5ede9))" stroke="var(--forest,var(--accent,#29564c))"/><text x="56" y="363" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">规划：步骤 k+1</text><text x="344" y="363" font-size="20" fill="var(--ink,#243b48)" text-anchor="start">聚合节点开始读取两项结果</text><path d="M40 412H920" stroke="var(--line,var(--rule,#bfc8c3))"/><text x="40" y="448" font-size="18" fill="var(--muted,#536772)" text-anchor="start">隔离针对图 channel，不代表外部数据库也具备同一步隔离。</text></g>
 </svg>
 <figcaption>图：隔离针对图 channel，不代表外部数据库也具备同一步隔离。</figcaption>
 </figure>
@@ -1579,16 +1579,16 @@ def reservation_node(state):
 <p>仪器子图需要滤镜名称和允许查询的规则，不需要审批人账号、通知地址或真实提交工具。窄输入降低误用和泄露范围，也让固定测试更容易构造。</p>
 <p>输出则应包含直接观察、来源版本和未决项，不要返回完整工具日志让父模型再猜重点。若父图需要审计中间过程，可以在受控观测系统中保留子轨迹，不必把它们全部变成主上下文。</p>
 <h2 id="13-subgraphs--常见多-agent-模式">常见多 Agent 模式<a class="anchor" href="#13-subgraphs--常见多-agent-模式" aria-label="链接到本节">#</a></h2>
-<h3 id="13-subgraphs--router">Router<a class="anchor" href="#13-subgraphs--router" aria-label="链接到本节">#</a></h3>
+<h3 id="13-subgraphs--路由-router">路由（Router）<a class="anchor" href="#13-subgraphs--路由-router" aria-label="链接到本节">#</a></h3>
 <p>路由选择仪器、归档或澄清路径，适合问题类型较互斥的入口。输出可约束为枚举，并保留 unknown，避免把不支持的天体动力学问题硬塞进仪器专家。</p>
 <p>路由错了时，应允许返回不适用结果再升级，而不是无限转发。测路由要覆盖混合问题与陌生领域，不只测试关键词明显的例子。</p>
-<h3 id="13-subgraphs--subagents">Subagents<a class="anchor" href="#13-subgraphs--subagents" aria-label="链接到本节">#</a></h3>
+<h3 id="13-subgraphs--子-agent-subagents">子 Agent（Subagents）<a class="anchor" href="#13-subgraphs--子-agent-subagents" aria-label="链接到本节">#</a></h3>
 <p>主助手把“核对 <code>SIM-FILTER-2@r1</code> 的限制”交给窄子任务，完成后收集结果。主流程保留控制权，子任务不直接批准申请。</p>
 <p>委托应有完成 schema、预算与允许工具。主助手只看到最终摘要不等于失败不存在，返回值需要明确成功、缺证据或依赖故障。</p>
-<h3 id="13-subgraphs--handoff">Handoff<a class="anchor" href="#13-subgraphs--handoff" aria-label="链接到本节">#</a></h3>
+<h3 id="13-subgraphs--交接-handoff">交接（Handoff）<a class="anchor" href="#13-subgraphs--交接-handoff" aria-label="链接到本节">#</a></h3>
 <p>当研究结束进入值班审核时，可以正式转移当前处理角色和允许动作。应用需保存接收方、必要上下文与转移原因，确保下一轮交互由正确处理者接管。</p>
 <p>一句“请找值班员”只是文本建议，不构成控制转移。真正 handoff 会改变路由和状态，并定义无人接手、超时或拒绝接手时如何处理。</p>
-<h3 id="13-subgraphs--custom-workflow">Custom workflow<a class="anchor" href="#13-subgraphs--custom-workflow" aria-label="链接到本节">#</a></h3>
+<h3 id="13-subgraphs--自定义流程-custom-workflow">自定义流程（Custom workflow）<a class="anchor" href="#13-subgraphs--自定义流程-custom-workflow" aria-label="链接到本节">#</a></h3>
 <p>固定预算、两个研究子图、人工审批和本地发布可以混合在同一图中。模型只在需要解释或研究时参与，确定性规则直接由代码执行。</p>
 <p>这种组合让关键约束更容易测试：任一必需核验缺失就不进入批准路径，拒绝只修订当前版本，预算耗尽有单独终态，不需要所有动作都由专家聊天决定。</p>
 <h2 id="13-subgraphs--context-engineering-比角色描述重要">Context engineering 比角色描述重要<a class="anchor" href="#13-subgraphs--context-engineering-比角色描述重要" aria-label="链接到本节">#</a></h2>
@@ -1988,19 +1988,19 @@ description: 为模拟观测申请核对曝光、读出和校准预算
 <p>本章继续使用观测申请，分别检查协作和连接的边界。无论封装多少层，人工批准、最终授权和外部副作用仍需有明确归属。</p>
 <h2 id="17-multi-agent-mcp--多-agent-官方模式">多 Agent 官方模式<a class="anchor" href="#17-multi-agent-mcp--多-agent-官方模式" aria-label="链接到本节">#</a></h2>
 <p>官方文档介绍 handoff、router、subagents、skills 等模式，也允许混合自定义流程。选择时先描述控制权是否转移、任务是否独立、知识是否只需按需加载，再对应封装。</p>
-<h3 id="17-multi-agent-mcp--handoff">Handoff<a class="anchor" href="#17-multi-agent-mcp--handoff" aria-label="链接到本节">#</a></h3>
+<h3 id="17-multi-agent-mcp--交接-handoff">交接（Handoff）<a class="anchor" href="#17-multi-agent-mcp--交接-handoff" aria-label="链接到本节">#</a></h3>
 <p>资料研究结束后，把当前处理阶段交给值班审核角色。转移记录应包含申请身份、草稿 revision、必要摘要和允许动作，下一条交互才能由正确处理者响应。</p>
 <p>这不同于主助手临时调用一个专家。交接后谁接收用户输入、失败时回到哪里、是否允许原角色继续修改，都要在状态中明确。仅输出“请联系值班员”不会改变程序控制权。</p>
-<h3 id="17-multi-agent-mcp--router">Router<a class="anchor" href="#17-multi-agent-mcp--router" aria-label="链接到本节">#</a></h3>
+<h3 id="17-multi-agent-mcp--路由-router">路由（Router）<a class="anchor" href="#17-multi-agent-mcp--路由-router" aria-label="链接到本节">#</a></h3>
 <p>路由器将“滤镜配置”交给仪器研究，“既往观测记录”交给归档研究，无法分类时进入澄清。输出使用受限类别，保留未知路径，比让字符串任意匹配节点名更可靠。</p>
 <p>混合问题可以拆成多个任务，不必强制只能选一位专家。路由测试要包含模糊和不支持的问题，避免未知内容因关键词碰巧匹配而被错误处理。</p>
-<h3 id="17-multi-agent-mcp--subagents">Subagents<a class="anchor" href="#17-multi-agent-mcp--subagents" aria-label="链接到本节">#</a></h3>
+<h3 id="17-multi-agent-mcp--子-agent-subagents">子 Agent（Subagents）<a class="anchor" href="#17-multi-agent-mcp--子-agent-subagents" aria-label="链接到本节">#</a></h3>
 <p>主助手保留控制，只委托“核验规则 r1 的开销项”等窄任务。子 Agent 返回引用、限制和完成状态，主助手据此继续计算与审批。</p>
 <p>委托合同要说明何时结束以及失败如何返回。若子 Agent 无法访问来源，不能生成一个看似正常的结论来满足格式；主层应能区分缺证据和服务故障。</p>
-<h3 id="17-multi-agent-mcp--skills">Skills<a class="anchor" href="#17-multi-agent-mcp--skills" aria-label="链接到本节">#</a></h3>
+<h3 id="17-multi-agent-mcp--技能-skills">技能（Skills）<a class="anchor" href="#17-multi-agent-mcp--技能-skills" aria-label="链接到本节">#</a></h3>
 <p>重复的研究流程可写成技能元数据和正文，需要时加载，不需要每次把全部仪器手册放进 prompt。技能共享的是知识或步骤，不必新增一个持续对话的角色。</p>
 <p>共享也带来版本责任。同一流程更新了开销规则，旧申请仍应保留原研究依据。技能加载改变上下文，不应悄悄修改批准状态或获得新增权限。</p>
-<h3 id="17-multi-agent-mcp--custom-workflow">Custom workflow<a class="anchor" href="#17-multi-agent-mcp--custom-workflow" aria-label="链接到本节">#</a></h3>
+<h3 id="17-multi-agent-mcp--自定义流程-custom-workflow">自定义流程（Custom workflow）<a class="anchor" href="#17-multi-agent-mcp--自定义流程-custom-workflow" aria-label="链接到本节">#</a></h3>
 <p>固定预算节点、仪器子 Agent、归档子图和人工 review 可以组合在同一状态图中。业务确定的顺序由图表达，模型负责适合它的研究与解释。</p>
 <p>这种方式适合“不满足预算就不能申请”的约束。无需让多个角色协商一个代码可以直接判断的不等式，也不必为保持纯 Agent 风格隐藏确定性节点。</p>
 <h2 id="17-multi-agent-mcp--多-agent-的记忆边界不变">多 Agent 的记忆边界不变<a class="anchor" href="#17-multi-agent-mcp--多-agent-的记忆边界不变" aria-label="链接到本节">#</a></h2>

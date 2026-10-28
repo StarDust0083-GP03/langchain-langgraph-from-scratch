@@ -40,16 +40,16 @@
 <p>仪器子图需要滤镜名称和允许查询的规则，不需要审批人账号、通知地址或真实提交工具。窄输入降低误用和泄露范围，也让固定测试更容易构造。</p>
 <p>输出则应包含直接观察、来源版本和未决项，不要返回完整工具日志让父模型再猜重点。若父图需要审计中间过程，可以在受控观测系统中保留子轨迹，不必把它们全部变成主上下文。</p>
 <h2 id="常见多-agent-模式">常见多 Agent 模式<a class="anchor" href="#常见多-agent-模式" aria-label="链接到本节">#</a></h2>
-<h3 id="router">Router<a class="anchor" href="#router" aria-label="链接到本节">#</a></h3>
+<h3 id="路由-router">路由（Router）<a class="anchor" href="#路由-router" aria-label="链接到本节">#</a></h3>
 <p>路由选择仪器、归档或澄清路径，适合问题类型较互斥的入口。输出可约束为枚举，并保留 unknown，避免把不支持的天体动力学问题硬塞进仪器专家。</p>
 <p>路由错了时，应允许返回不适用结果再升级，而不是无限转发。测路由要覆盖混合问题与陌生领域，不只测试关键词明显的例子。</p>
-<h3 id="subagents">Subagents<a class="anchor" href="#subagents" aria-label="链接到本节">#</a></h3>
+<h3 id="子-agent-subagents">子 Agent（Subagents）<a class="anchor" href="#子-agent-subagents" aria-label="链接到本节">#</a></h3>
 <p>主助手把“核对 <code>SIM-FILTER-2@r1</code> 的限制”交给窄子任务，完成后收集结果。主流程保留控制权，子任务不直接批准申请。</p>
 <p>委托应有完成 schema、预算与允许工具。主助手只看到最终摘要不等于失败不存在，返回值需要明确成功、缺证据或依赖故障。</p>
-<h3 id="handoff">Handoff<a class="anchor" href="#handoff" aria-label="链接到本节">#</a></h3>
+<h3 id="交接-handoff">交接（Handoff）<a class="anchor" href="#交接-handoff" aria-label="链接到本节">#</a></h3>
 <p>当研究结束进入值班审核时，可以正式转移当前处理角色和允许动作。应用需保存接收方、必要上下文与转移原因，确保下一轮交互由正确处理者接管。</p>
 <p>一句“请找值班员”只是文本建议，不构成控制转移。真正 handoff 会改变路由和状态，并定义无人接手、超时或拒绝接手时如何处理。</p>
-<h3 id="custom-workflow">Custom workflow<a class="anchor" href="#custom-workflow" aria-label="链接到本节">#</a></h3>
+<h3 id="自定义流程-custom-workflow">自定义流程（Custom workflow）<a class="anchor" href="#自定义流程-custom-workflow" aria-label="链接到本节">#</a></h3>
 <p>固定预算、两个研究子图、人工审批和本地发布可以混合在同一图中。模型只在需要解释或研究时参与，确定性规则直接由代码执行。</p>
 <p>这种组合让关键约束更容易测试：任一必需核验缺失就不进入批准路径，拒绝只修订当前版本，预算耗尽有单独终态，不需要所有动作都由专家聊天决定。</p>
 <h2 id="context-engineering-比角色描述重要">Context engineering 比角色描述重要<a class="anchor" href="#context-engineering-比角色描述重要" aria-label="链接到本节">#</a></h2>

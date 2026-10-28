@@ -20,19 +20,19 @@
 <p>本章继续使用观测申请，分别检查协作和连接的边界。无论封装多少层，人工批准、最终授权和外部副作用仍需有明确归属。</p>
 <h2 id="多-agent-官方模式">多 Agent 官方模式<a class="anchor" href="#多-agent-官方模式" aria-label="链接到本节">#</a></h2>
 <p>官方文档介绍 handoff、router、subagents、skills 等模式，也允许混合自定义流程。选择时先描述控制权是否转移、任务是否独立、知识是否只需按需加载，再对应封装。</p>
-<h3 id="handoff">Handoff<a class="anchor" href="#handoff" aria-label="链接到本节">#</a></h3>
+<h3 id="交接-handoff">交接（Handoff）<a class="anchor" href="#交接-handoff" aria-label="链接到本节">#</a></h3>
 <p>资料研究结束后，把当前处理阶段交给值班审核角色。转移记录应包含申请身份、草稿 revision、必要摘要和允许动作，下一条交互才能由正确处理者响应。</p>
 <p>这不同于主助手临时调用一个专家。交接后谁接收用户输入、失败时回到哪里、是否允许原角色继续修改，都要在状态中明确。仅输出“请联系值班员”不会改变程序控制权。</p>
-<h3 id="router">Router<a class="anchor" href="#router" aria-label="链接到本节">#</a></h3>
+<h3 id="路由-router">路由（Router）<a class="anchor" href="#路由-router" aria-label="链接到本节">#</a></h3>
 <p>路由器将“滤镜配置”交给仪器研究，“既往观测记录”交给归档研究，无法分类时进入澄清。输出使用受限类别，保留未知路径，比让字符串任意匹配节点名更可靠。</p>
 <p>混合问题可以拆成多个任务，不必强制只能选一位专家。路由测试要包含模糊和不支持的问题，避免未知内容因关键词碰巧匹配而被错误处理。</p>
-<h3 id="subagents">Subagents<a class="anchor" href="#subagents" aria-label="链接到本节">#</a></h3>
+<h3 id="子-agent-subagents">子 Agent（Subagents）<a class="anchor" href="#子-agent-subagents" aria-label="链接到本节">#</a></h3>
 <p>主助手保留控制，只委托“核验规则 r1 的开销项”等窄任务。子 Agent 返回引用、限制和完成状态，主助手据此继续计算与审批。</p>
 <p>委托合同要说明何时结束以及失败如何返回。若子 Agent 无法访问来源，不能生成一个看似正常的结论来满足格式；主层应能区分缺证据和服务故障。</p>
-<h3 id="skills">Skills<a class="anchor" href="#skills" aria-label="链接到本节">#</a></h3>
+<h3 id="技能-skills">技能（Skills）<a class="anchor" href="#技能-skills" aria-label="链接到本节">#</a></h3>
 <p>重复的研究流程可写成技能元数据和正文，需要时加载，不需要每次把全部仪器手册放进 prompt。技能共享的是知识或步骤，不必新增一个持续对话的角色。</p>
 <p>共享也带来版本责任。同一流程更新了开销规则，旧申请仍应保留原研究依据。技能加载改变上下文，不应悄悄修改批准状态或获得新增权限。</p>
-<h3 id="custom-workflow">Custom workflow<a class="anchor" href="#custom-workflow" aria-label="链接到本节">#</a></h3>
+<h3 id="自定义流程-custom-workflow">自定义流程（Custom workflow）<a class="anchor" href="#自定义流程-custom-workflow" aria-label="链接到本节">#</a></h3>
 <p>固定预算节点、仪器子 Agent、归档子图和人工 review 可以组合在同一状态图中。业务确定的顺序由图表达，模型负责适合它的研究与解释。</p>
 <p>这种方式适合“不满足预算就不能申请”的约束。无需让多个角色协商一个代码可以直接判断的不等式，也不必为保持纯 Agent 风格隐藏确定性节点。</p>
 <h2 id="多-agent-的记忆边界不变">多 Agent 的记忆边界不变<a class="anchor" href="#多-agent-的记忆边界不变" aria-label="链接到本节">#</a></h2>
