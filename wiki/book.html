@@ -1591,7 +1591,7 @@ def reservation_node(state):
 <h3 id="13-subgraphs--自定义流程-custom-workflow">自定义流程（Custom workflow）<a class="anchor" href="#13-subgraphs--自定义流程-custom-workflow" aria-label="链接到本节">#</a></h3>
 <p>固定预算、两个研究子图、人工审批和本地发布可以混合在同一图中。模型只在需要解释或研究时参与，确定性规则直接由代码执行。</p>
 <p>这种组合让关键约束更容易测试：任一必需核验缺失就不进入批准路径，拒绝只修订当前版本，预算耗尽有单独终态，不需要所有动作都由专家聊天决定。</p>
-<h2 id="13-subgraphs--context-engineering-比角色描述重要">Context engineering 比角色描述重要<a class="anchor" href="#13-subgraphs--context-engineering-比角色描述重要" aria-label="链接到本节">#</a></h2>
+<h2 id="13-subgraphs--上下文工程比角色描述重要">上下文工程比角色描述重要<a class="anchor" href="#13-subgraphs--上下文工程比角色描述重要" aria-label="链接到本节">#</a></h2>
 <p>角色提示可以说明研究侧重点，但质量更依赖实际输入：允许来源是否完整，单位是否明确，已确认事实是否与用户猜测分开，缺资料时能否返回未知。工具集合与完成 schema 同样影响专家能做什么。</p>
 <p>对比两种上下文可看出差异。只写“你是精密仪器专家”仍可能让模型猜读出时间；直接给出 <code>SIM-TIME-4@r1</code> 的 20 秒与 300 秒，并要求只使用已引用开销，才有可核验的计算依据。</p>
 <h3 id="13-subgraphs--多个角色的多数意见不是独立证据">多个角色的多数意见不是独立证据<a class="anchor" href="#13-subgraphs--多个角色的多数意见不是独立证据" aria-label="链接到本节">#</a></h3>

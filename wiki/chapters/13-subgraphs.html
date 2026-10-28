@@ -16,7 +16,7 @@
     <button class="tool-button" data-theme><span class="theme-label">深色</span></button>
     <button class="tool-button" data-menu-open aria-label="打开目录">目录</button>
   </nav>
-</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 13</div><div class="rail-title">子图与多 Agent：先隔离上下文</div><ol><li><a href="#先问为什么要拆">先问为什么要拆</a></li><li><a href="#子图的两种数据边界">子图的两种数据边界</a></li><li><a href="#常见多-agent-模式">常见多 Agent 模式</a></li><li><a href="#context-engineering-比角色描述重要">Context engineering 比角色描述重要</a></li><li><a href="#记忆放在哪一层">记忆放在哪一层</a></li><li><a href="#并行专家与聚合">并行专家与聚合</a></li><li><a href="#失败隔离">失败隔离</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 13 章</div><h1>子图与多 Agent：先隔离上下文</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 12 分钟</div></header><div class="prose"><p>观测研究可能同时涉及仪器规则和历史资料。把它们拆成两个专家之前，应先决定每个专家允许看到什么、返回什么，以及失败怎样影响申请。增加角色名称不会自动产生知识或可靠性，清楚的数据边界才使拆分有价值。</p>
+</header><main id="main" class="reader-layout"><aside class="chapter-rail"><div class="rail-label">Chapter 13</div><div class="rail-title">子图与多 Agent：先隔离上下文</div><ol><li><a href="#先问为什么要拆">先问为什么要拆</a></li><li><a href="#子图的两种数据边界">子图的两种数据边界</a></li><li><a href="#常见多-agent-模式">常见多 Agent 模式</a></li><li><a href="#上下文工程比角色描述重要">上下文工程比角色描述重要</a></li><li><a href="#记忆放在哪一层">记忆放在哪一层</a></li><li><a href="#并行专家与聚合">并行专家与聚合</a></li><li><a href="#失败隔离">失败隔离</a></li><li><a href="#源码入口">源码入口</a></li></ol></aside><article class="chapter"><header class="chapter-head"><div class="chapter-number">第 13 章</div><h1>子图与多 Agent：先隔离上下文</h1><div class="chapter-meta">源码快照 2026-09-22 · 约 12 分钟</div></header><div class="prose"><p>观测研究可能同时涉及仪器规则和历史资料。把它们拆成两个专家之前，应先决定每个专家允许看到什么、返回什么，以及失败怎样影响申请。增加角色名称不会自动产生知识或可靠性，清楚的数据边界才使拆分有价值。</p>
 <p>子图提供一个可独立定义状态和完成条件的单元。它可以包含模型，也可以完全由确定性节点组成；多 Agent 只是使用子图的一类方式。</p>
 <h2 id="先问为什么要拆">先问为什么要拆<a class="anchor" href="#先问为什么要拆" aria-label="链接到本节">#</a></h2>
 <p>若历史资料检索需要独立权限、上下文很长，且结果能用窄对象返回，就值得考虑子图。它可以单独测试和升级，也能把主流程不需要的工具尝试留在内部。</p>
@@ -52,7 +52,7 @@
 <h3 id="自定义流程-custom-workflow">自定义流程（Custom workflow）<a class="anchor" href="#自定义流程-custom-workflow" aria-label="链接到本节">#</a></h3>
 <p>固定预算、两个研究子图、人工审批和本地发布可以混合在同一图中。模型只在需要解释或研究时参与，确定性规则直接由代码执行。</p>
 <p>这种组合让关键约束更容易测试：任一必需核验缺失就不进入批准路径，拒绝只修订当前版本，预算耗尽有单独终态，不需要所有动作都由专家聊天决定。</p>
-<h2 id="context-engineering-比角色描述重要">Context engineering 比角色描述重要<a class="anchor" href="#context-engineering-比角色描述重要" aria-label="链接到本节">#</a></h2>
+<h2 id="上下文工程比角色描述重要">上下文工程比角色描述重要<a class="anchor" href="#上下文工程比角色描述重要" aria-label="链接到本节">#</a></h2>
 <p>角色提示可以说明研究侧重点，但质量更依赖实际输入：允许来源是否完整，单位是否明确，已确认事实是否与用户猜测分开，缺资料时能否返回未知。工具集合与完成 schema 同样影响专家能做什么。</p>
 <p>对比两种上下文可看出差异。只写“你是精密仪器专家”仍可能让模型猜读出时间；直接给出 <code>SIM-TIME-4@r1</code> 的 20 秒与 300 秒，并要求只使用已引用开销，才有可核验的计算依据。</p>
 <h3 id="多个角色的多数意见不是独立证据">多个角色的多数意见不是独立证据<a class="anchor" href="#多个角色的多数意见不是独立证据" aria-label="链接到本节">#</a></h3>
